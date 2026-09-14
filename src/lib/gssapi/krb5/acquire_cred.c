@@ -325,6 +325,8 @@ can_get_initial_creds(krb5_context context, krb5_gss_cred_id_rec *cred)
 {
     krb5_error_code code;
 
+    if (context->kdc_io_exclusive)
+        return FALSE;
     if (cred->password != NULL)
         return TRUE;
 
@@ -552,6 +554,8 @@ kg_cred_time_to_refresh(krb5_context context, krb5_gss_cred_id_rec *cred)
 {
     krb5_timestamp now, soon;
 
+    if (context->kdc_io_exclusive)
+        return FALSE;
     if (krb5_timeofday(context, &now))
         return FALSE;
     soon = ts_incr(now, 30);
@@ -689,9 +693,13 @@ acquire_init_cred(krb5_context context, OM_uint32 *minor_status,
     int caller_ccname = 0;
 
     /* Get ccache from caller if available. */
-    if (GSS_ERROR(kg_sync_ccache_name(context, minor_status)))
+    if (context->kdc_io_exclusive && (req_ccache == NULL || password != GSS_C_NO_BUFFER || client_keytab != NULL)) {
+        *minor_status = EINVAL;
+        return GSS_S_NO_CRED;
+    }
+    if (!context->kdc_io_exclusive && GSS_ERROR(kg_sync_ccache_name(context, minor_status)))
         return GSS_S_FAILURE;
-    if (GSS_ERROR(kg_caller_provided_ccache_name(minor_status,
+    if (!context->kdc_io_exclusive && GSS_ERROR(kg_caller_provided_ccache_name(minor_status,
                                                  &caller_ccname)))
         return GSS_S_FAILURE;
 
@@ -721,7 +729,7 @@ acquire_init_cred(krb5_context context, OM_uint32 *minor_status,
 
     if (client_keytab != NULL) {
         code = krb5_kt_dup(context, client_keytab, &cred->client_keytab);
-    } else {
+    } else if (!context->kdc_io_exclusive) {
         code = krb5_kt_client_default(context, &cred->client_keytab);
         if (code) {
             /* Treat resolution failure similarly to a client keytab which
@@ -1187,9 +1195,32 @@ gss_krb5int_import_cred(OM_uint32 *minor_status,
         desired_name = (gss_name_t)&name;
     }
 
-    code = acquire_cred(minor_status, desired_name, NULL, GSS_C_INDEFINITE,
-                        usage, req->id, req->keytab, FALSE, cred_handle,
-                        &time_rec);
+    if (req->context != NULL) {
+        if (!req->context->kdc_io_exclusive || req->id == NULL || req->keytab != NULL || desired_name == GSS_C_NO_NAME) {
+            *minor_status = EINVAL;
+            code = GSS_S_NO_CRED;
+        } else {
+            code = acquire_cred_context(req->context, minor_status, desired_name,
+                                        NULL, GSS_C_INDEFINITE, GSS_C_INITIATE,
+                                        req->id, NULL, NULL, NULL, NULL, FALSE,
+                                        cred_handle, &time_rec);
+            if (!GSS_ERROR(code)) {
+                krb5_gss_cred_id_t imported = (krb5_gss_cred_id_t)*cred_handle;
+                krb5_error_code err = imported->impersonator != NULL ? EINVAL :
+                    krb5_copy_context(req->context, &imported->runtime_context);
+                if (err) {
+                    OM_uint32 ignored;
+                    krb5_gss_release_cred(&ignored, cred_handle);
+                    *minor_status = err;
+                    code = GSS_S_FAILURE;
+                }
+            }
+        }
+    } else {
+        code = acquire_cred(minor_status, desired_name, NULL, GSS_C_INDEFINITE,
+                            usage, req->id, req->keytab, FALSE, cred_handle,
+                            &time_rec);
+    }
     if (req->keytab_principal != NULL)
         k5_mutex_destroy(&name.lock);
     return code;

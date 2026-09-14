@@ -20,7 +20,7 @@
 
 extern  krb5_principal      master_princ;
 extern  krb5_principal      hist_princ;
-extern  krb5_keyblock       master_keyblock;
+extern  krb5_keyblock       kadm5_master_keyblock;
 extern  krb5_db_entry       master_db;
 
 static int decrypt_key_data(krb5_context context,
@@ -463,7 +463,7 @@ kadm5_create_principal_3(void *server_handle,
                            FALSE, kdb);
     } else {
         /* Null password means create with random key (new in 1.8). */
-        ret = krb5_dbe_crk(handle->context, &master_keyblock,
+        ret = krb5_dbe_crk(handle->context, &kadm5_master_keyblock,
                            new_ks_tuple, new_n_ks_tuple, FALSE, kdb);
         if (mask & KADM5_KVNO) {
             for (i = 0; i < kdb->n_key_data; i++)
@@ -913,7 +913,7 @@ done:
  *
  * Effects:
  * For each new_key in new_key_data:
- *      decrypt new_key with the master_keyblock
+ *      decrypt new_key with the kadm5_master_keyblock
  *      for each password in pw_hist_data:
  *              for each hist_key in password:
  *                      decrypt hist_key with hist_keyblock
@@ -996,7 +996,7 @@ free_history_entry(krb5_context context, osa_pw_hist_ent *hist)
  * Effects:
  *
  * hist->key_data is allocated to store n_key_data key_datas.  Each
- * element of key_data is decrypted with master_keyblock, re-encrypted
+ * element of key_data is decrypted with kadm5_master_keyblock, re-encrypted
  * in hist_key, and added to hist->key_data.  hist->n_key_data is
  * set to n_key_data.
  */
@@ -1905,7 +1905,7 @@ kadm5_ret_t kadm5_decrypt_key(void *server_handle,
         /* try refreshing master key list */
         /* XXX it would nice if we had the mkvno here for optimization */
         if (krb5_db_fetch_mkey_list(handle->context, master_princ,
-                                    &master_keyblock) == 0) {
+                                    &kadm5_master_keyblock) == 0) {
             if ((ret = krb5_dbe_find_mkey(handle->context, &dbent,
                                           &mkey_ptr))) {
                 return ret;

@@ -606,3 +606,34 @@ krb5_is_permitted_enctype(krb5_context context, krb5_enctype etype)
     krb5_free_enctypes(context, list);
     return ret;
 }
+
+/* A caller-owned context has no system profile, tracing, or dynamic plugins. */
+krb5_error_code KRB5_CALLCONV
+krb5_init_runtime_context(const char *realm, krb5_pre_send_fn hook, void *data,
+                          krb5_context *out)
+{
+    profile_t profile = NULL;
+    krb5_error_code ret;
+    const char *setting[] = { "libdefaults", NULL, NULL };
+    const char *keys[] = { "default_realm", "rdns", "dns_lookup_kdc",
+                          "dns_lookup_realm", "dns_canonicalize_hostname",
+                          "canonicalize", "forwardable", "proxiable",
+                          "kdc_default_options" };
+    const char *values[] = { realm, "false", "false", "false", "false",
+                            "false", "false", "false", "0" };
+    size_t i;
+    *out = NULL;
+    if (realm == NULL || *realm == 0) return EINVAL;
+    ret = profile_init(NULL, &profile);
+    if (ret) return ret;
+    for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        setting[1] = keys[i];
+        ret = profile_add_relation(profile, setting, values[i]);
+        if (ret) goto cleanup;
+    }
+    ret = krb5_init_context_profile(profile, KRB5_INIT_CONTEXT_SECURE, out);
+    if (!ret) krb5_set_kdc_send_hook_exclusive(*out, hook, data);
+cleanup:
+    profile_release(profile);
+    return ret;
+}

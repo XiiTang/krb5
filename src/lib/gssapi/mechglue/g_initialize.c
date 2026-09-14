@@ -513,6 +513,10 @@ loadConfigFiles(void)
 static void
 updateMechList(void)
 {
+#ifdef IMAPIPE_STATIC_GSS
+	/* Private build: only linked mechanisms, no environment/config interposers. */
+	return;
+#else
 	gss_mech_info minfo;
 
 #if defined(_WIN32)
@@ -533,6 +537,7 @@ updateMechList(void)
 		if (minfo->is_interposer && minfo->mech == NULL)
 			loadInterMech(minfo);
 	}
+#endif
 } /* updateMechList */
 
 /* Update the mech list from system configuration if we have never done so.

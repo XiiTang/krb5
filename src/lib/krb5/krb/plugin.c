@@ -357,7 +357,7 @@ load_if_needed(krb5_context context, struct plugin_mapping *map,
     struct plugin_file_handle *handle = NULL;
     void (*initvt_fn)(void);
 
-    if (map->module != NULL || map->dyn_path == NULL)
+    if (context->kdc_io_exclusive || map->module != NULL || map->dyn_path == NULL)
         return;
     if (asprintf(&symname, "%s_%s_initvt", iname, map->modname) < 0)
         return;

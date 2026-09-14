@@ -262,6 +262,50 @@ verify_cred2(const krb5_creds *c)
     assert(data_eq_string(c->second_ticket, "2ticket"));
 }
 
+static void
+test_memory_import(krb5_context ctx)
+{
+    const struct test *t = &tests[3];
+    struct k5buf buf;
+    krb5_ccache cc = NULL;
+    krb5_principal p;
+    krb5_creds c;
+    krb5_cc_cursor cur;
+    size_t i, principal_end, cred1_end;
+    k5_buf_init_dynamic(&buf);
+    k5_buf_add_len(&buf, t->header, t->headerlen);
+    k5_buf_add_len(&buf, t->princ, t->princlen);
+    principal_end = buf.len;
+    k5_buf_add_len(&buf, t->cred1, t->cred1len);
+    cred1_end = buf.len;
+    k5_buf_add_len(&buf, t->cred2, t->cred2len);
+    ctx->os_context.os_flags = 0;
+    for (i = 0; i < buf.len; i++) {
+        if (i == principal_end || i == cred1_end) continue;
+        assert(krb5_cc_import_memory(ctx, buf.data, i, &cc) != 0);
+        assert(cc == NULL);
+        assert(ctx->os_context.os_flags == 0);
+    }
+    assert(krb5_cc_import_memory(ctx, buf.data, buf.len, &cc) == 0);
+    assert(strcmp(krb5_cc_get_type(ctx, cc), "MEMORY") == 0);
+    assert(ctx->os_context.time_offset == 300);
+    assert(ctx->os_context.usec_offset == 54321);
+    assert(krb5_cc_get_principal(ctx, cc, &p) == 0);
+    verify_princ(p);
+    krb5_free_principal(ctx, p);
+    assert(krb5_cc_start_seq_get(ctx, cc, &cur) == 0);
+    assert(krb5_cc_next_cred(ctx, cc, &cur, &c) == 0);
+    verify_cred1(&c);
+    krb5_free_cred_contents(ctx, &c);
+    assert(krb5_cc_next_cred(ctx, cc, &cur, &c) == 0);
+    verify_cred2(&c);
+    krb5_free_cred_contents(ctx, &c);
+    assert(krb5_cc_next_cred(ctx, cc, &cur, &c) == KRB5_CC_END);
+    assert(krb5_cc_end_seq_get(ctx, cc, &cur) == 0);
+    assert(krb5_cc_destroy(ctx, cc) == 0);
+    k5_buf_free(&buf);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -413,6 +457,7 @@ main(int argc, char **argv)
         krb5_free_principal(context, princ);
     }
 
+    test_memory_import(context);
     (void)unlink(filename);
     free(ccname);
     krb5_free_context(context);

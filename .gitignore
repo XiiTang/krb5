@@ -579,3 +579,6 @@ local.properties
 /src/windows/leash/kfwribbon.h
 /src/windows/leash/kfwribbon.rc
 /src/windows/leash/out2con.sav
+
+/target/
+/Cargo.lock

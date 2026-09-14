@@ -417,6 +417,14 @@ check_for_svc_unavailable (krb5_context context,
 }
 
 void KRB5_CALLCONV
+krb5_set_kdc_send_hook_exclusive(krb5_context context, krb5_pre_send_fn send_hook, void *data)
+{
+    context->kdc_send_hook = send_hook;
+    context->kdc_send_hook_data = data;
+    context->kdc_io_exclusive = TRUE;
+}
+
+void KRB5_CALLCONV
 krb5_set_kdc_send_hook(krb5_context context, krb5_pre_send_fn send_hook,
                        void *data)
 {
@@ -455,6 +463,22 @@ k5_sendto_kdc(krb5_context context, const krb5_data *message,
     krb5_data reply = empty_data(), *hook_message = NULL, *hook_reply = NULL;
 
     *reply_out = empty_data();
+
+    /* An owned transport must run before discovery, including DNS/plugins. */
+    if (context->kdc_io_exclusive) {
+        if (context->kdc_send_hook == NULL)
+            return KRB5_KDC_UNREACH;
+        retval = context->kdc_send_hook(context, context->kdc_send_hook_data,
+                                        realm, message, &hook_message, &hook_reply);
+        krb5_free_data(context, hook_message);
+        if (retval || hook_reply == NULL) {
+            krb5_free_data(context, hook_reply);
+            return retval ? retval : KRB5_KDC_UNREACH;
+        }
+        *reply_out = *hook_reply;
+        free(hook_reply);
+        return 0;
+    }
 
     /*
      * find KDC location(s) for realm

@@ -1254,6 +1254,7 @@ struct _krb5_context {
     krb5_trace_callback trace_callback;
     void *trace_callback_data;
 
+    krb5_boolean kdc_io_exclusive;
     krb5_pre_send_fn kdc_send_hook;
     void *kdc_send_hook_data;
 

@@ -8616,6 +8616,19 @@ krb5_set_kdc_recv_hook(krb5_context context, krb5_post_recv_fn recv_hook,
 #pragma pack(pop)
 #endif
 
+krb5_error_code KRB5_CALLCONV
+krb5_init_runtime_context(const char *realm, krb5_pre_send_fn send_hook,
+                          void *data, krb5_context *context_out);
+
+/* IMAPipe: exclusive, caller-owned KDC transport; never perform native discovery or I/O. */
+void KRB5_CALLCONV
+krb5_set_kdc_send_hook_exclusive(krb5_context context, krb5_pre_send_fn send_hook, void *data);
+
+krb5_error_code KRB5_CALLCONV
+krb5_cc_import_memory(krb5_context context, const void *data, size_t len, krb5_ccache *cache_out);
+krb5_error_code KRB5_CALLCONV
+krb5_kt_import_memory(krb5_context context, const char *memory_name, const void *data, size_t len, krb5_keytab *keytab_out);
+
 KRB5INT_END_DECLS
 
 /* Don't use this!  We're going to phase it out.  It's just here to keep

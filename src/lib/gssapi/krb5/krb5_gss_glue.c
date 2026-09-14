@@ -135,6 +135,7 @@ gss_krb5_import_cred(OM_uint32 *minor_status,
 
     *cred = GSS_C_NO_CREDENTIAL;
 
+    req.context = NULL;
     req.id = id;
     req.keytab_principal = keytab_principal;
     req.keytab = keytab;
@@ -148,6 +149,22 @@ gss_krb5_import_cred(OM_uint32 *minor_status,
                                        &req_buffer);
 
     return major_status;
+}
+
+/* Import only an explicit cache with a caller-owned context. */
+OM_uint32 KRB5_CALLCONV
+gss_krb5_import_cred_context(OM_uint32 *minor_status, krb5_context context,
+                           krb5_ccache cache, krb5_principal principal,
+                           gss_cred_id_t *cred)
+{
+    static const gss_OID_desc req_oid = {
+        GSS_KRB5_IMPORT_CRED_OID_LENGTH, GSS_KRB5_IMPORT_CRED_OID };
+    struct krb5_gss_import_cred_req req = { context, cache, principal, NULL };
+    gss_buffer_desc buffer = { sizeof(req), &req };
+    if (cred == NULL || context == NULL || cache == NULL || principal == NULL)
+        return GSS_S_CALL_INACCESSIBLE_WRITE;
+    *cred = GSS_C_NO_CREDENTIAL;
+    return gss_set_cred_option(minor_status, cred, (gss_OID)&req_oid, &buffer);
 }
 
 OM_uint32 KRB5_CALLCONV

@@ -892,12 +892,15 @@ krb5_gss_init_sec_context_ext(
     OM_uint32 tmp_min_stat;
 
     if (*context_handle == GSS_C_NO_CONTEXT) {
-        kerr = krb5_gss_init_context(&context);
+        cred = (krb5_gss_cred_id_t)claimant_cred_handle;
+        kerr = (cred != NULL && cred->runtime_context != NULL) ?
+            krb5_copy_context(cred->runtime_context, &context) :
+            krb5_gss_init_context(&context);
         if (kerr) {
             *minor_status = kerr;
             return GSS_S_FAILURE;
         }
-        if (GSS_ERROR(kg_sync_ccache_name(context, minor_status))) {
+        if (!context->kdc_io_exclusive && GSS_ERROR(kg_sync_ccache_name(context, minor_status))) {
             save_error_info(*minor_status, context);
             krb5_free_context(context);
             return GSS_S_FAILURE;
@@ -1012,7 +1015,11 @@ krb5_gss_init_context (krb5_context *ctxp)
         return krb5int_init_context_kdc(ctxp);
 #endif
 
+#ifdef IMAPIPE_STATIC_GSS
+    return krb5_init_runtime_context("IMAPIPE.INVALID", NULL, NULL, ctxp);
+#else
     return krb5_init_context(ctxp);
+#endif
 }
 
 #ifndef _WIN32

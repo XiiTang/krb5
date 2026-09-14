@@ -390,7 +390,7 @@ krb5_authdata_context_init(krb5_context kcontext,
     }
     internal_count = n_tables;
 
-    if (PLUGIN_DIR_OPEN(&plugins) == 0 &&
+    if (!kcontext->kdc_io_exclusive && PLUGIN_DIR_OPEN(&plugins) == 0 &&
         krb5int_open_plugin_dirs(objdirs, NULL,
                                  &plugins,
                                  &kcontext->err) == 0 &&

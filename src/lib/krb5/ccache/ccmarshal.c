@@ -283,31 +283,110 @@ unmarshal_authdata(struct k5input *in, int version)
 
 /* Unmarshal a credential using the specified file ccache version (expressed as
  * an integer from 1 to 4).  Does not check for trailing garbage. */
+static void
+unmarshal_cred_input(struct k5input *in, int version, krb5_creds *creds)
+{
+    creds->client = unmarshal_princ(in, version);
+    creds->server = unmarshal_princ(in, version);
+    unmarshal_keyblock(in, version, &creds->keyblock);
+    creds->times.authtime = get32(in, version);
+    creds->times.starttime = get32(in, version);
+    creds->times.endtime = get32(in, version);
+    creds->times.renew_till = get32(in, version);
+    creds->is_skey = k5_input_get_byte(in);
+    creds->ticket_flags = get32(in, version);
+    creds->addresses = unmarshal_addrs(in, version);
+    creds->authdata = unmarshal_authdata(in, version);
+    get_data(in, version, &creds->ticket);
+    get_data(in, version, &creds->second_ticket);
+}
+
 krb5_error_code
 k5_unmarshal_cred(const unsigned char *data, size_t len, int version,
                   krb5_creds *creds)
 {
     struct k5input in;
-
     k5_input_init(&in, data, len);
-    creds->client = unmarshal_princ(&in, version);
-    creds->server = unmarshal_princ(&in, version);
-    unmarshal_keyblock(&in, version, &creds->keyblock);
-    creds->times.authtime = get32(&in, version);
-    creds->times.starttime = get32(&in, version);
-    creds->times.endtime = get32(&in, version);
-    creds->times.renew_till = get32(&in, version);
-    creds->is_skey = k5_input_get_byte(&in);
-    creds->ticket_flags = get32(&in, version);
-    creds->addresses = unmarshal_addrs(&in, version);
-    creds->authdata = unmarshal_authdata(&in, version);
-    get_data(&in, version, &creds->ticket);
-    get_data(&in, version, &creds->second_ticket);
+    unmarshal_cred_input(&in, version, creds);
     if (in.status) {
         krb5_free_cred_contents(NULL, creds);
         memset(creds, 0, sizeof(*creds));
     }
     return (in.status == EINVAL) ? KRB5_CC_FORMAT : in.status;
+}
+
+/* Import a frozen FILE ccache v4 into an anonymous private MEMORY cache. */
+krb5_error_code KRB5_CALLCONV
+krb5_cc_import_memory(krb5_context context, const void *data, size_t len,
+                      krb5_ccache *cache_out)
+{
+    struct k5input in, header;
+    krb5_ccache cache = NULL;
+    krb5_principal principal = NULL;
+    krb5_creds creds;
+    krb5_error_code ret;
+    uint16_t header_len, tag, field_len;
+    int32_t time_offset = 0, usec_offset = 0;
+    krb5_boolean have_offset = FALSE;
+    const unsigned char *header_data;
+    *cache_out = NULL;
+    k5_input_init(&in, data, len);
+    if (k5_input_get_uint16_be(&in) != 0x0504)
+        return KRB5_CCACHE_BADVNO;
+    header_len = k5_input_get_uint16_be(&in);
+    header_data = k5_input_get_bytes(&in, header_len);
+    if (in.status)
+        return KRB5_CC_FORMAT;
+    k5_input_init(&header, header_data, header_len);
+    while (header.len && !header.status) {
+        tag = k5_input_get_uint16_be(&header);
+        field_len = k5_input_get_uint16_be(&header);
+        if (tag == 1) {
+            if (field_len != 8 || header.len < 8)
+                return KRB5_CC_FORMAT;
+            if (!have_offset) {
+                time_offset = k5_input_get_uint32_be(&header);
+                usec_offset = k5_input_get_uint32_be(&header);
+                have_offset = TRUE;
+            } else {
+                k5_input_get_bytes(&header, 8);
+            }
+        } else {
+            k5_input_get_bytes(&header, field_len);
+        }
+    }
+    if (header.status)
+        return KRB5_CC_FORMAT;
+    principal = unmarshal_princ(&in, 4);
+    if (in.status) { ret = KRB5_CC_FORMAT; goto cleanup; }
+    ret = krb5_cc_new_unique(context, "MEMORY", NULL, &cache);
+    if (ret) goto cleanup;
+    ret = krb5_cc_initialize(context, cache, principal);
+    if (ret) goto cleanup;
+    while (in.len && !in.status) {
+        memset(&creds, 0, sizeof(creds));
+        unmarshal_cred_input(&in, 4, &creds);
+        if (in.status) ret = KRB5_CC_FORMAT;
+        else if (!krb5_principal_compare(context, principal, creds.client)) ret = KRB5_CC_FORMAT;
+        else ret = krb5_cc_store_cred(context, cache, &creds);
+        krb5_free_cred_contents(context, &creds);
+        if (ret) goto cleanup;
+    }
+    if (have_offset && (context->library_options & KRB5_LIBOPT_SYNC_KDCTIME) &&
+        !(context->os_context.os_flags & KRB5_OS_TOFFSET_VALID)) {
+        context->os_context.time_offset = time_offset;
+        context->os_context.usec_offset = usec_offset;
+        context->os_context.os_flags =
+            (context->os_context.os_flags & ~KRB5_OS_TOFFSET_TIME) |
+            KRB5_OS_TOFFSET_VALID;
+    }
+    *cache_out = cache;
+    cache = NULL;
+    ret = 0;
+cleanup:
+    krb5_free_principal(context, principal);
+    if (cache != NULL) krb5_cc_destroy(context, cache);
+    return ret;
 }
 
 /* Unmarshal a principal using the specified file ccache version (expressed as

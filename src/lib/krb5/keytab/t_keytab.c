@@ -417,6 +417,49 @@ do_test(krb5_context context, const char *prefix, krb5_boolean delete)
 
 }
 
+static void
+test_memory_import(krb5_context ctx)
+{
+    krb5_keytab file, mem;
+    krb5_keytab_entry e = {0}, got;
+    unsigned char bytes[2048];
+    size_t n, i;
+    FILE *fp;
+    assert(krb5_parse_name(ctx, "user@MEMORY.TEST", &e.principal) == 0);
+    e.vno = 300;
+    e.timestamp = 123;
+    e.key.enctype = ENCTYPE_AES128_CTS_HMAC_SHA1_96;
+    e.key.length = 16;
+    e.key.contents = (unsigned char *)strdup("0123456789abcdef");
+    unlink("runtime-test.keytab");
+    assert(krb5_kt_resolve(ctx, "WRFILE:runtime-test.keytab", &file) == 0);
+    assert(krb5_kt_add_entry(ctx, file, &e) == 0);
+    assert(krb5_kt_close(ctx, file) == 0);
+    fp = fopen("runtime-test.keytab", "rb");
+    assert(fp != NULL);
+    n = fread(bytes, 1, sizeof(bytes), fp);
+    assert(feof(fp));
+    fclose(fp);
+    unlink("runtime-test.keytab");
+    for (i = 0; i < n; i++) {
+        if (i == 2) continue; /* A header-only keytab is valid and empty. */
+        assert(krb5_kt_import_memory(ctx, "MEMORY:truncated", bytes, i, &mem) != 0);
+        assert(mem == NULL);
+    }
+    assert(krb5_kt_import_memory(ctx, "FILE:forbidden", bytes, n, &mem) != 0);
+    assert(krb5_kt_import_memory(ctx, "MEMORY:roundtrip", bytes, n, &mem) == 0);
+    assert(krb5_kt_get_entry(ctx, mem, e.principal, 300, e.key.enctype, &got) == 0);
+    assert(got.vno == 300 && got.key.length == 16);
+    assert(memcmp(got.key.contents, e.key.contents, 16) == 0);
+    krb5_free_keytab_entry_contents(ctx, &got);
+    assert(krb5_kt_close(ctx, mem) == 0);
+    /* Closing the last reference clears the private MEMORY keytab. */
+    assert(krb5_kt_resolve(ctx, "MEMORY:roundtrip", &mem) == 0);
+    assert(krb5_kt_get_entry(ctx, mem, e.principal, 0, 0, &got) != 0);
+    assert(krb5_kt_close(ctx, mem) == 0);
+    krb5_free_keytab_entry_contents(ctx, &e);
+}
+
 int
 main(void)
 {
@@ -435,6 +478,7 @@ main(void)
     kret = krb5_kt_register(context, &krb5_ktf_writable_ops);
     CHECK_ERR(kret, KRB5_KT_TYPE_EXISTS, "register ktf_writable");
 
+    test_memory_import(context);
     test_misc(context);
     do_test(context, "WRFILE:", FALSE);
     do_test(context, "MEMORY:", TRUE);

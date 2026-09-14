@@ -658,3 +658,9 @@ profile_ser_externalize
 profile_ser_internalize
 profile_ser_size
 profile_update_relation
+
+krb5_set_kdc_send_hook_exclusive
+krb5_cc_import_memory
+krb5_kt_import_memory
+
+krb5_init_runtime_context

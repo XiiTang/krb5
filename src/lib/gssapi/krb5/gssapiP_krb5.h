@@ -174,6 +174,7 @@ typedef struct _krb5_gss_cred_id_rec {
 
     /* name/type of credential */
     gss_cred_usage_t usage;
+    krb5_context runtime_context;
     krb5_gss_name_t name;
     krb5_principal acceptor_mprinc;
     krb5_principal impersonator;
@@ -1170,6 +1171,7 @@ gss_krb5int_sec_context_sasl_ssf(OM_uint32 *, const gss_ctx_id_t,
 #define GSS_KRB5_IMPORT_CRED_OID "\x2a\x86\x48\x86\xf7\x12\x01\x02\x02\x05\x0d"
 
 struct krb5_gss_import_cred_req {
+    krb5_context context;
     krb5_ccache id;
     krb5_principal keytab_principal;
     krb5_keytab keytab;

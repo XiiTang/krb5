@@ -15,7 +15,7 @@
 #include "server_internal.h"
 
 krb5_principal      master_princ;
-krb5_keyblock       master_keyblock; /* local mkey */
+krb5_keyblock kadm5_master_keyblock; /* local mkey */
 krb5_db_entry       master_db;
 
 krb5_principal      hist_princ;
@@ -48,8 +48,8 @@ krb5_error_code kdb_init_master(kadm5_server_handle_t handle,
                                        realm, NULL, &master_princ)))
         goto done;
 
-    krb5_free_keyblock_contents(handle->context, &master_keyblock);
-    master_keyblock.enctype = handle->params.enctype;
+    krb5_free_keyblock_contents(handle->context, &kadm5_master_keyblock);
+    kadm5_master_keyblock.enctype = handle->params.enctype;
 
     /*
      * Fetch the local mkey, may not be the latest but that's okay because we
@@ -57,18 +57,18 @@ krb5_error_code kdb_init_master(kadm5_server_handle_t handle,
      * valid mkey.
      */
     ret = krb5_db_fetch_mkey(handle->context, master_princ,
-                             master_keyblock.enctype, from_kbd,
+                             kadm5_master_keyblock.enctype, from_kbd,
                              FALSE /* only prompt once */,
                              handle->params.stash_file,
                              &mkvno  /* get the kvno of the returned mkey */,
                              NULL /* I'm not sure about this,
                                      but it's what the kdc does --marc */,
-                             &master_keyblock);
+                             &kadm5_master_keyblock);
     if (ret)
         goto done;
 
     ret = krb5_db_fetch_mkey_list(handle->context, master_princ,
-                                  &master_keyblock);
+                                  &kadm5_master_keyblock);
     if (ret)
         krb5_db_fini(handle->context);
 

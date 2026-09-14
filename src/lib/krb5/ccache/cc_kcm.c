@@ -45,7 +45,7 @@
 #include "../os/os-proto.h"
 #include <sys/socket.h>
 #include <sys/un.h>
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(IMAPIPE_STATIC_GSS)
 #include <mach/mach.h>
 #include <servers/bootstrap.h>
 #include "kcmrpc.h"
@@ -74,7 +74,7 @@ struct kcm_cursor {
 
 struct kcmio {
     SOCKET fd;
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(IMAPIPE_STATIC_GSS)
     mach_port_t mport;
 #endif
 };
@@ -180,7 +180,7 @@ kcmreq_init(struct kcmreq *req, kcm_opcode opcode, krb5_ccache cache)
     }
 }
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(IMAPIPE_STATIC_GSS)
 
 /* The maximum length of an in-band request or reply as defined by the RPC
  * protocol. */

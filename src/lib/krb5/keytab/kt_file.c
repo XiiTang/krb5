@@ -1381,3 +1381,92 @@ krb5_ktfileint_find_slot(krb5_context context, krb5_keytab id, krb5_int32 *size_
     return 0;
 }
 #endif /* LEAN_CLIENT */
+
+/* In-memory v2 keytab import. Framing and entries remain owned by this codec. */
+#include "k5-input.h"
+static krb5_error_code
+memory_kt_data(struct k5input *in, krb5_data *out)
+{
+    size_t len = k5_input_get_uint16_be(in);
+    const unsigned char *data = k5_input_get_bytes(in, len);
+    if (in->status || len == 0) return KRB5_KT_FORMAT;
+    out->data = malloc(len + 1);
+    if (out->data == NULL) return ENOMEM;
+    memcpy(out->data, data, len);
+    out->data[len] = 0;
+    out->length = len;
+    return 0;
+}
+krb5_error_code KRB5_CALLCONV
+krb5_kt_import_memory(krb5_context context, const char *memory_name,
+                      const void *data, size_t len, krb5_keytab *keytab_out)
+{
+    struct k5input in, entry;
+    krb5_keytab keytab = NULL;
+    krb5_keytab_entry value;
+    krb5_error_code ret = 0;
+    const unsigned char *bytes;
+    int32_t size;
+    uint16_t count, keylen;
+    uint32_t kvno;
+    size_t i;
+    *keytab_out = NULL;
+    memset(&value, 0, sizeof(value));
+    if (memory_name == NULL || strncmp(memory_name, "MEMORY:", 7) != 0)
+        return EINVAL;
+    k5_input_init(&in, data, len);
+    if (k5_input_get_uint16_be(&in) != 0x0502)
+        return KRB5_KEYTAB_BADVNO;
+    ret = krb5_kt_resolve(context, memory_name, &keytab);
+    if (ret) return ret;
+    while (in.len && !in.status) {
+        size = (int32_t)k5_input_get_uint32_be(&in);
+        if (size == INT32_MIN) {ret = KRB5_KT_FORMAT; goto cleanup;}
+        if (size == 0) break;
+        if (size < 0) {
+            k5_input_get_bytes(&in, (size_t)-size);
+            continue;
+        }
+        bytes = k5_input_get_bytes(&in, size);
+        if (in.status) break;
+        k5_input_init(&entry, bytes, size);
+        count = k5_input_get_uint16_be(&entry);
+        if (count == 0 || count > entry.len / 2) {ret = KRB5_KT_FORMAT; goto cleanup;}
+        value.principal = k5alloc(sizeof(*value.principal), &ret);
+        if (ret) goto cleanup;
+        value.principal->data = k5calloc(count, sizeof(krb5_data), &ret);
+        if (ret) goto cleanup;
+        value.principal->length = count;
+        ret = memory_kt_data(&entry, &value.principal->realm);
+        if (ret) goto cleanup;
+        for (i = 0; i < count; i++) {
+            ret = memory_kt_data(&entry, &value.principal->data[i]);
+            if (ret) goto cleanup;
+        }
+        value.principal->type = k5_input_get_uint32_be(&entry);
+        value.timestamp = k5_input_get_uint32_be(&entry);
+        value.vno = k5_input_get_byte(&entry);
+        value.key.enctype = k5_input_get_uint16_be(&entry);
+        keylen = k5_input_get_uint16_be(&entry);
+        bytes = k5_input_get_bytes(&entry, keylen);
+        if (entry.status || keylen == 0) {ret = KRB5_KT_FORMAT; goto cleanup;}
+        value.key.contents = k5memdup(bytes, keylen, &ret);
+        if (ret) goto cleanup;
+        value.key.length = keylen;
+        if (entry.len >= 4) {
+            kvno = k5_input_get_uint32_be(&entry);
+            if (kvno) value.vno = kvno;
+        }
+        ret = krb5_kt_add_entry(context, keytab, &value);
+        krb5_free_keytab_entry_contents(context, &value);
+        memset(&value, 0, sizeof(value));
+        if (ret) goto cleanup;
+    }
+    if (in.status) {ret = KRB5_KT_FORMAT; goto cleanup;}
+    *keytab_out = keytab;
+    keytab = NULL;
+cleanup:
+    krb5_free_keytab_entry_contents(context, &value);
+    if (keytab) krb5_kt_close(context, keytab);
+    return ret;
+}
