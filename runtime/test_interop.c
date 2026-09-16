@@ -22,7 +22,7 @@ static int io(void *data,const void *realm,size_t realm_len,const void *request,
     uint32_t n;
     int fd,ret=1;
     state->calls++;
-    assert(realm_len==12 && memcmp(realm,"IMAPIPE.TEST",12)==0);
+    assert(realm_len==sizeof("BOUNDLESS.TEST")-1 && memcmp(realm,"BOUNDLESS.TEST",sizeof("BOUNDLESS.TEST")-1)==0);
     if(state->fail)return 1;
     fd=socket(AF_INET,SOCK_STREAM,0);assert(fd>=0);
     setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
@@ -49,7 +49,7 @@ static void roundtrip(imk_credential *credential,gss_cred_id_t acceptor){
     imk_buffer token={0},reply={0};
     OM_uint32 major,minor,flags;int complete=0,encrypted=0;uint32_t limit;
     const char payload[]="exact protected bytes";
-    assert(imk_exchange_new(credential,"imap/server.test@IMAPIPE.TEST",&exchange)==0);
+    assert(imk_exchange_new(credential,"imap/server.test@BOUNDLESS.TEST",&exchange)==0);
     assert(imk_step(exchange,NULL,0,&token,&complete)==0 && !complete && token.len);
     input.length=token.len;input.value=token.data;
     major=gss_accept_sec_context(&minor,&server,acceptor,&input,GSS_C_NO_CHANNEL_BINDINGS,NULL,NULL,&output,&flags,NULL,NULL);
@@ -87,22 +87,22 @@ int main(int argc,char **argv){
     gss_cred_id_t acceptor=GSS_C_NO_CREDENTIAL;
     OM_uint32 major,minor;int32_t ret;int after_first;
     assert(argc==5);transport.port=atoi(argv[1]);keytab=file(argv[2]);ccache=file(argv[4]);
-    assert(krb5_init_runtime_context("IMAPIPE.TEST",NULL,NULL,&ctx)==0);
+    assert(krb5_init_runtime_context("BOUNDLESS.TEST",NULL,NULL,&ctx)==0);
     assert(krb5_kt_resolve(ctx,argv[3],&server_key)==0);
-    assert(krb5_parse_name(ctx,"imap/server.test@IMAPIPE.TEST",&service)==0);
+    assert(krb5_parse_name(ctx,"imap/server.test@BOUNDLESS.TEST",&service)==0);
     major=gss_krb5_import_cred(&minor,NULL,service,server_key,&acceptor);
     if(major)fprintf(stderr,"import acceptor failed: %u/%u\n",major,minor);
     assert(major==GSS_S_COMPLETE);
-    ret=imk_credential_new("user@IMAPIPE.TEST","IMAPIPE.TEST",keytab.data,keytab.len,1,3600,io,&transport,&credential);
+    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,1,3600,io,&transport,&credential);
     if(ret)fprintf(stderr,"credential failed: %d\n",ret);
     assert(ret==0 && transport.calls>0);
     roundtrip(credential,acceptor);after_first=transport.calls;
     roundtrip(credential,acceptor);assert(transport.calls==after_first); /* private cached service ticket */
     imk_credential_free(credential);credential=NULL;
-    ret=imk_credential_new("user@IMAPIPE.TEST","IMAPIPE.TEST",ccache.data,ccache.len,0,0,io,&transport,&credential);
+    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",ccache.data,ccache.len,0,0,io,&transport,&credential);
     assert(ret==0);roundtrip(credential,acceptor);imk_credential_free(credential);credential=NULL;
     transport.calls=0;transport.fail=1;
-    assert(imk_credential_new("user@IMAPIPE.TEST","IMAPIPE.TEST",keytab.data,keytab.len,1,3600,io,&transport,&credential)!=0);
+    assert(imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,1,3600,io,&transport,&credential)!=0);
     assert(credential==NULL && transport.calls==1);
     imk_buffer_free(&keytab);imk_buffer_free(&ccache);
     gss_release_cred(&minor,&acceptor);krb5_free_principal(ctx,service);krb5_kt_close(ctx,server_key);krb5_free_context(ctx);

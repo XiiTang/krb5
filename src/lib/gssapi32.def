@@ -190,5 +190,5 @@ EXPORTS
 ; Added in 1.19
 	GSS_KRB5_NT_X509_CERT				@151	DATA
 
-; IMAPipe private runtime context
+; Boundless private runtime context
 	gss_krb5_import_cred_context @152

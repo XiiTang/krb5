@@ -32,7 +32,7 @@ fn copy(from: &Path, to: &Path) {
 fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=runtime");
-    println!("cargo:rerun-if-env-changed=IMAPIPE_KRB5_BUILD_DIR");
+    println!("cargo:rerun-if-env-changed=BOUNDLESS_KRB5_BUILD_DIR");
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let target = env::var("CARGO_CFG_TARGET_OS").unwrap();
@@ -40,7 +40,7 @@ fn main() {
         target != "windows",
         "Windows private Kerberos build and package integration are required"
     );
-    let native = if let Some(path) = env::var_os("IMAPIPE_KRB5_BUILD_DIR") {
+    let native = if let Some(path) = env::var_os("BOUNDLESS_KRB5_BUILD_DIR") {
         PathBuf::from(path)
     } else {
         let source = out.join("source");
@@ -60,7 +60,7 @@ fn main() {
             .args([
                 "--enable-static",
                 "--disable-shared",
-                "--enable-imapipe-runtime",
+                "--enable-boundless-runtime",
                 "--disable-pkinit",
                 "--disable-nls",
                 "--without-keyutils",
@@ -80,7 +80,7 @@ fn main() {
     let config =
         fs::read_to_string(native.join("include/autoconf.h")).expect("private Kerberos config");
     assert!(
-        config.contains("#define IMAPIPE_STATIC_GSS 1"),
+        config.contains("#define BOUNDLESS_STATIC_GSS 1"),
         "Kerberos must use the isolated runtime build"
     );
     cc::Build::new()
@@ -89,7 +89,7 @@ fn main() {
         .include(native.join("include"))
         .include(root.join("src/include"))
         .warnings(true)
-        .compile("imapipe_kerberos_bridge");
+        .compile("boundless_kerberos_bridge");
     println!(
         "cargo:rustc-link-search=native={}",
         native.join("lib").display()

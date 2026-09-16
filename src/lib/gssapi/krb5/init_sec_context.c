@@ -1015,8 +1015,8 @@ krb5_gss_init_context (krb5_context *ctxp)
         return krb5int_init_context_kdc(ctxp);
 #endif
 
-#ifdef IMAPIPE_STATIC_GSS
-    return krb5_init_runtime_context("IMAPIPE.INVALID", NULL, NULL, ctxp);
+#ifdef BOUNDLESS_STATIC_GSS
+    return krb5_init_runtime_context("BOUNDLESS.INVALID", NULL, NULL, ctxp);
 #else
     return krb5_init_context(ctxp);
 #endif

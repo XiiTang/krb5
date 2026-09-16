@@ -1,5 +1,5 @@
-#ifndef IMAPIPE_KERBEROS_NATIVE_H
-#define IMAPIPE_KERBEROS_NATIVE_H
+#ifndef BOUNDLESS_KERBEROS_NATIVE_H
+#define BOUNDLESS_KERBEROS_NATIVE_H
 #include <stddef.h>
 #include <stdint.h>
 typedef struct imk_credential imk_credential;

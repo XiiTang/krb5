@@ -513,7 +513,7 @@ loadConfigFiles(void)
 static void
 updateMechList(void)
 {
-#ifdef IMAPIPE_STATIC_GSS
+#ifdef BOUNDLESS_STATIC_GSS
 	/* Private build: only linked mechanisms, no environment/config interposers. */
 	return;
 #else

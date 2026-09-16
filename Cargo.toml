@@ -1,9 +1,9 @@
 [package]
-name = "imapipe-kerberos"
+name = "boundless-kerberos"
 version = "1.22.2"
 edition = "2024"
 license-file = "NOTICE"
-links = "imapipe_kerberos"
+links = "boundless_kerberos"
 [lib]
 path = "runtime/lib.rs"
 [dependencies]

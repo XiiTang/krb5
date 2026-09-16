@@ -1415,11 +1415,11 @@ AC_SUBST(localedir)
 
 # Determine the default macOS ccache type and whether to build the KCM
 # Mach RPC support.
-AC_ARG_ENABLE([imapipe-runtime],
-  [AS_HELP_STRING([--enable-imapipe-runtime], [private static GSS mechanisms without native credential caches])],
-  [], [enable_imapipe_runtime=no])
-AS_IF([test "$enable_imapipe_runtime" = yes],
-  [AC_DEFINE(IMAPIPE_STATIC_GSS, 1, [Use only private built-in GSS mechanisms])])
+AC_ARG_ENABLE([boundless-runtime],
+  [AS_HELP_STRING([--enable-boundless-runtime], [private static GSS mechanisms without native credential caches])],
+  [], [enable_boundless_runtime=no])
+AS_IF([test "$enable_boundless_runtime" = yes],
+  [AC_DEFINE(BOUNDLESS_STATIC_GSS, 1, [Use only private built-in GSS mechanisms])])
 MACOS_FRAMEWORK=
 dnl The outer brackets around the case statement prevent m4 from
 dnl eating the brackets in the glob patterns, but also prevent us from
@@ -1446,7 +1446,7 @@ dnl using AC_DEFINE within the body.
   OSX=no
   ;;
 esac]
-if test "$enable_imapipe_runtime" = yes; then
+if test "$enable_boundless_runtime" = yes; then
   macos_defccname=
   MACOS_FRAMEWORK=
   OSX=no

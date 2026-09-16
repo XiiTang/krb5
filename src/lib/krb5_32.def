@@ -518,7 +518,7 @@ EXPORTS
 	krb5int_copy_data_contents			@479 ; PRIVATE
 	krb5_free_pa_data				@480 ; PRIVATE
 
-; IMAPipe private runtime context
+; Boundless private runtime context
 	krb5_set_kdc_send_hook_exclusive @481
 	krb5_cc_import_memory @482
 	krb5_kt_import_memory @483

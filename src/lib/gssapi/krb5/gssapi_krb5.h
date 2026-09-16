@@ -298,7 +298,7 @@ gss_krb5_import_cred(OM_uint32 *minor_status,
                      krb5_keytab keytab,
                      gss_cred_id_t *cred);
 
-/* IMAPipe explicit private-cache credential import. */
+/* Boundless explicit private-cache credential import. */
 OM_uint32 KRB5_CALLCONV
 gss_krb5_import_cred_context(OM_uint32 *minor_status, krb5_context context,
                            krb5_ccache cache, krb5_principal principal,
