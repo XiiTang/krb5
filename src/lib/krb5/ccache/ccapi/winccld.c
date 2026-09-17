@@ -83,6 +83,10 @@ static int LoadFuncs(const char* dll_name, FUNC_INFO fi[],
 
 void krb5_win_ccdll_load(krb5_context context)
 {
+#ifdef BOUNDLESS_STATIC_GSS
+    /* The private runtime never loads native credential-cache providers. */
+    return;
+#else
     krb5_cc_register(context, &krb5_fcc_ops, 0);
     if (krb5_win_ccdll_loaded)
         return;
@@ -90,6 +94,7 @@ void krb5_win_ccdll_load(krb5_context context)
         return;         /* Error, give up */
     krb5_win_ccdll_loaded = 1;
     krb5_cc_dfl_ops = &krb5_cc_stdcc_ops; /* Use stdcc! */
+#endif
 }
 
 int krb5_is_ccdll_loaded(void)
