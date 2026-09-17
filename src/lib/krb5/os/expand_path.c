@@ -454,8 +454,8 @@ k5_expand_path_tokens_extra(krb5_context context, const char *path_in,
 {
     krb5_error_code ret;
     struct k5buf buf;
-    char *tok_begin, *tok_end, *tok_val, **extra_tokens = NULL, *path;
-    const char *path_left;
+    char *tok_val, **extra_tokens = NULL, *path;
+    const char *path_left, *tok_begin, *tok_end;
     size_t nargs = 0, i;
     va_list ap;
 
