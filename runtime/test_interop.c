@@ -49,7 +49,7 @@ static void roundtrip(imk_credential *credential,gss_cred_id_t acceptor){
     imk_buffer token={0},reply={0};
     OM_uint32 major,minor,flags;int complete=0,encrypted=0;uint32_t limit;
     const char payload[]="exact protected bytes";
-    assert(imk_exchange_new(credential,"imap/server.test@BOUNDLESS.TEST",&exchange)==0);
+    assert(imk_exchange_new(credential,"imap/server.test@BOUNDLESS.TEST",IMK_MECHANISM_KERBEROS,0,&exchange)==0);
     assert(imk_step(exchange,NULL,0,&token,&complete)==0 && !complete && token.len);
     input.length=token.len;input.value=token.data;
     major=gss_accept_sec_context(&minor,&server,acceptor,&input,GSS_C_NO_CHANNEL_BINDINGS,NULL,NULL,&output,&flags,NULL,NULL);
@@ -93,16 +93,16 @@ int main(int argc,char **argv){
     major=gss_krb5_import_cred(&minor,NULL,service,server_key,&acceptor);
     if(major)fprintf(stderr,"import acceptor failed: %u/%u\n",major,minor);
     assert(major==GSS_S_COMPLETE);
-    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,1,3600,io,&transport,&credential);
+    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,IMK_SOURCE_KEYTAB,3600,0,io,&transport,&credential);
     if(ret)fprintf(stderr,"credential failed: %d\n",ret);
     assert(ret==0 && transport.calls>0);
     roundtrip(credential,acceptor);after_first=transport.calls;
     roundtrip(credential,acceptor);assert(transport.calls==after_first); /* private cached service ticket */
     imk_credential_free(credential);credential=NULL;
-    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",ccache.data,ccache.len,0,0,io,&transport,&credential);
+    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",ccache.data,ccache.len,IMK_SOURCE_CCACHE,0,0,io,&transport,&credential);
     assert(ret==0);roundtrip(credential,acceptor);imk_credential_free(credential);credential=NULL;
     transport.calls=0;transport.fail=1;
-    assert(imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,1,3600,io,&transport,&credential)!=0);
+    assert(imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,IMK_SOURCE_KEYTAB,3600,0,io,&transport,&credential)!=0);
     assert(credential==NULL && transport.calls==1);
     imk_buffer_free(&keytab);imk_buffer_free(&ccache);
     gss_release_cred(&minor,&acceptor);krb5_free_principal(ctx,service);krb5_kt_close(ctx,server_key);krb5_free_context(ctx);

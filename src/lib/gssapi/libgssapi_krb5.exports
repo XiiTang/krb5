@@ -168,3 +168,4 @@ gss_store_cred_into
 gssint_g_seqstate_init
 
 gss_krb5_import_cred_context
+gss_spnego_initiator_cred

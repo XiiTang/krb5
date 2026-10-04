@@ -304,6 +304,13 @@ gss_krb5_import_cred_context(OM_uint32 *minor_status, krb5_context context,
                            krb5_ccache cache, krb5_principal principal,
                            gss_cred_id_t *cred);
 
+/* Boundless: a SPNEGO initiator credential over an explicit credential,
+ * which it takes ownership of.  A private runtime has no default
+ * credentials for SPNEGO to acquire. */
+OM_uint32 KRB5_CALLCONV
+gss_spnego_initiator_cred(OM_uint32 *minor_status, gss_cred_id_t mcred,
+                          gss_cred_id_t *cred);
+
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */

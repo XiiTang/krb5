@@ -192,3 +192,4 @@ EXPORTS
 
 ; Boundless private runtime context
 	gss_krb5_import_cred_context @152
+	gss_spnego_initiator_cred @153

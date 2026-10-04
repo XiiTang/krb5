@@ -395,6 +395,57 @@ spnego_gss_acquire_cred_from(OM_uint32 *minor_status,
 	return (status);
 }
 
+/*
+ * Boundless: a SPNEGO initiator credential that negotiates with the explicit
+ * mechglue credential mcred, which it takes ownership of.  A private runtime
+ * has no default credentials, so SPNEGO cannot acquire its own.
+ */
+OM_uint32 KRB5_CALLCONV
+gss_spnego_initiator_cred(OM_uint32 *minor_status, gss_cred_id_t mcred,
+			  gss_cred_id_t *output_cred_handle)
+{
+	OM_uint32 status, tmpmin;
+	spnego_gss_cred_id_t spcred = NULL;
+	gss_union_cred_t cred = NULL;
+
+	if (minor_status == NULL || output_cred_handle == NULL)
+		return (GSS_S_CALL_INACCESSIBLE_WRITE);
+	*minor_status = 0;
+	*output_cred_handle = GSS_C_NO_CREDENTIAL;
+	if (mcred == GSS_C_NO_CREDENTIAL)
+		return (GSS_S_NO_CRED);
+
+	status = create_spnego_cred(minor_status, mcred, &spcred);
+	if (status != GSS_S_COMPLETE)
+		return (status);
+	cred = calloc(1, sizeof(*cred));
+	if (cred != NULL)
+		cred->cred_array = calloc(1, sizeof(gss_cred_id_t));
+	if (cred == NULL || cred->cred_array == NULL) {
+		*minor_status = ENOMEM;
+		status = GSS_S_FAILURE;
+		goto cleanup;
+	}
+	cred->loopback = cred;
+	cred->count = 1;
+	cred->cred_array[0] = (gss_cred_id_t)spcred;
+	status = generic_gss_copy_oid(minor_status, (gss_OID)gss_mech_spnego,
+				      &cred->mechs_array);
+	if (status != GSS_S_COMPLETE)
+		goto cleanup;
+	*output_cred_handle = (gss_cred_id_t)cred;
+	return (GSS_S_COMPLETE);
+
+cleanup:
+	if (cred != NULL) {
+		free(cred->cred_array);
+		free(cred);
+	}
+	/* The wrapper owns mcred: releasing it releases mcred too. */
+	spnego_gss_release_cred(&tmpmin, (gss_cred_id_t *)&spcred);
+	return (status);
+}
+
 /*ARGSUSED*/
 OM_uint32 KRB5_CALLCONV
 spnego_gss_release_cred(OM_uint32 *minor_status,

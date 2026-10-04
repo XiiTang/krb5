@@ -58,8 +58,9 @@ unsafe extern "C" {
         realm: *const c_char,
         data: *const c_void,
         len: usize,
-        keytab: c_int,
+        source: c_int,
         lifetime: u32,
+        forwardable: c_int,
         callback: unsafe extern "C" fn(
             *mut c_void,
             *const c_void,
@@ -76,6 +77,8 @@ unsafe extern "C" {
     fn imk_exchange_new(
         credential: *mut c_void,
         target: *const c_char,
+        mechanism: c_int,
+        delegate: c_int,
         out: *mut *mut c_void,
     ) -> i32;
     fn imk_exchange_free(exchange: *mut c_void);
@@ -168,22 +171,44 @@ pub enum Source<'a> {
         bytes: &'a [u8],
         initial_ticket_lifetime_seconds: u32,
     },
+    /// The principal's password, from which the initial ticket is requested.
+    /// No prompter is offered: an expired password fails.
+    Password {
+        password: &'a [u8],
+        initial_ticket_lifetime_seconds: u32,
+    },
+}
+/// The GSS mechanism an exchange speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mechanism {
+    /// Kerberos V5 (RFC 4121), protecting the session it opens.
+    Kerberos,
+    /// SPNEGO (RFC 4178) negotiating Kerberos, as HTTP Negotiate (RFC 4559)
+    /// carries it.
+    Spnego,
 }
 impl Credential {
+    /// `forwardable` asks the KDC for a ticket that can be delegated; it
+    /// applies to tickets requested here, not to an imported cache.
     pub fn new(
         principal: &str,
         realm: &str,
         source: Source<'_>,
+        forwardable: bool,
         transport_fn: Transport,
     ) -> Result<Self> {
         let principal = string(principal)?;
         let realm = string(realm)?;
-        let (bytes, keytab, lifetime) = match source {
+        let (bytes, source, lifetime) = match source {
             Source::Ccache(b) => (b, 0, 0),
             Source::Keytab {
                 bytes,
                 initial_ticket_lifetime_seconds,
             } => (bytes, 1, initial_ticket_lifetime_seconds),
+            Source::Password {
+                password,
+                initial_ticket_lifetime_seconds,
+            } => (password, 2, initial_ticket_lifetime_seconds),
         };
         let mut callback = Box::new(Callback {
             transport: transport_fn,
@@ -195,8 +220,9 @@ impl Credential {
                 realm.as_ptr(),
                 bytes.as_ptr().cast(),
                 bytes.len(),
-                keytab,
+                source,
                 lifetime,
+                forwardable.into(),
                 transport,
                 (&mut *callback as *mut Callback).cast(),
                 &mut out,
@@ -207,10 +233,33 @@ impl Credential {
             _callback: callback,
         })))
     }
+    /// A Kerberos exchange with `target`, delegating nothing.
     pub fn exchange(&self, target: &str) -> Result<Exchange> {
+        self.exchange_with(target, Mechanism::Kerberos, false)
+    }
+    /// An exchange with the principal `target`. With `delegate` the
+    /// credential is forwarded to it, and an exchange that completes without
+    /// delegating fails.
+    pub fn exchange_with(
+        &self,
+        target: &str,
+        mechanism: Mechanism,
+        delegate: bool,
+    ) -> Result<Exchange> {
         let target = string(target)?;
         let mut out = ptr::null_mut();
-        check(unsafe { imk_exchange_new(self.0.native.as_ptr(), target.as_ptr(), &mut out) })?;
+        check(unsafe {
+            imk_exchange_new(
+                self.0.native.as_ptr(),
+                target.as_ptr(),
+                match mechanism {
+                    Mechanism::Kerberos => 0,
+                    Mechanism::Spnego => 1,
+                },
+                delegate.into(),
+                &mut out,
+            )
+        })?;
         Ok(Exchange {
             native: NonNull::new(out).ok_or(Error::InvalidInput)?,
             _credential: self.clone(),
@@ -296,12 +345,31 @@ impl Exchange {
 mod tests {
     use super::*;
     #[test]
+    fn an_empty_or_nul_password_fails_before_any_request() {
+        for password in [&b""[..], b"pass\0word"] {
+            assert!(
+                Credential::new(
+                    "user@TEST",
+                    "TEST",
+                    Source::Password {
+                        password,
+                        initial_ticket_lifetime_seconds: 600,
+                    },
+                    false,
+                    Box::new(|_, _| panic!("no request for an unusable password"))
+                )
+                .is_err()
+            );
+        }
+    }
+    #[test]
     fn malformed_material_and_nul_names_fail() {
         assert!(
             Credential::new(
                 "user@TEST",
                 "TEST",
                 Source::Ccache(&[5, 4, 0]),
+                false,
                 Box::new(|_, _| panic!("no network for malformed cache"))
             )
             .is_err()
@@ -311,6 +379,7 @@ mod tests {
                 "user\0@TEST",
                 "TEST",
                 Source::Ccache(&[]),
+                false,
                 Box::new(|_, _| Err(()))
             )
             .is_err()
