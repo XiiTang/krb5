@@ -12,3 +12,13 @@ which authorizes every KDC as Access does.
 | Preserve string pointer constness with current glibc | Builds against glibc 2.43 | Linux build |
 | Build the private Kerberos runtime on Windows without native cache loading | The Windows build has the same isolation | Windows build |
 | Password sources, forwardable tickets, SPNEGO initiators and requested delegation | An initial ticket can be requested with a password; a ticket is forwardable only when the caller asks; `gss_spnego_initiator_cred` gives SPNEGO the explicit credential, since a private runtime has no default credentials for it to acquire; an exchange chooses Kerberos or SPNEGO, and delegates only when asked, failing when it cannot | Boundless `independent_acceptor_takes_password_tickets_spnego_and_permitted_delegation` against an owned KDC and python-gssapi |
+
+## KDC reply capacity (W11d)
+
+The caller's transport owns the configured reply ceiling. The Rust callback
+and C bridge retain only the native krb5_data unsigned 32-bit length capacity,
+checking before allocation or narrowing. Their independent 16 MiB ceilings
+previously refused a reply admitted by the caller.
+`a_large_kdc_reply_reaches_the_native_message_parser` passes a 17 MiB reply
+through both bridges and checks MIT's message-type classification. Boundless
+checks announced KDC lengths against body_read_maximum_bytes before allocation.

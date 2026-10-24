@@ -130,7 +130,7 @@ unsafe extern "C" fn transport(
         let realm = std::slice::from_raw_parts(realm.cast::<u8>(), realm_len);
         let request = std::slice::from_raw_parts(request.cast::<u8>(), request_len);
         let response = (callback.transport)(realm, request)?;
-        if response.is_empty() || response.len() > 16 * 1024 * 1024 {
+        if response.is_empty() || response.len() > u32::MAX as usize {
             return Err(());
         }
         let allocation = imk_alloc(response.len());
@@ -344,6 +344,18 @@ impl Exchange {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_large_kdc_reply_reaches_the_native_message_parser() {
+        let result = Credential::new("user@TEST", "TEST",
+            Source::Password { password: b"password", initial_ticket_lifetime_seconds: 600 },
+            false, Box::new(|_, request| {
+                assert!(!request.is_empty());
+                // An independent reply of this size passes both bridges. MIT
+                // then classifies its leading zero as a wrong message type.
+                Ok(Zeroizing::new(vec![0; 17 * 1024 * 1024]))
+            }));
+        assert!(matches!(result, Err(Error::Native(-1_765_328_344))));
+    }
     #[test]
     fn an_empty_or_nul_password_fails_before_any_request() {
         for password in [&b""[..], b"pass\0word"] {

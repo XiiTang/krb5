@@ -65,7 +65,7 @@ static krb5_error_code transport(krb5_context ctx, void *data,
         imk_buffer_free(&bytes);
         return KRB5_KDC_UNREACH;
     }
-    if (!bytes.len || bytes.len > 16 * 1024 * 1024 || !bytes.data) {
+    if (!bytes.len || bytes.len > UINT_MAX || !bytes.data) {
         imk_buffer_free(&bytes); return KRB5KRB_ERR_RESPONSE_TOO_BIG;
     }
     value.magic = 0; value.data = bytes.data; value.length = bytes.len;
