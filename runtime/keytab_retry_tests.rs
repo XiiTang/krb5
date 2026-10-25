@@ -173,6 +173,55 @@ mod located {
             options: *mut c_void,
         ) -> i32;
         fn krb5_free_cred_contents(context: *mut c_void, creds: *mut c_void);
+        fn krb5_set_kdc_recv_hook(context: *mut c_void, hook: RecvHook, data: *mut c_void);
+    }
+    #[repr(C)]
+    struct Data {
+        magic: i32,
+        length: u32,
+        data: *const c_char,
+    }
+    /// krb5_post_recv_fn (krb5.hin).
+    type RecvHook = unsafe extern "C" fn(
+        context: *mut c_void,
+        data: *mut c_void,
+        code: i32,
+        realm: *const Data,
+        message: *const Data,
+        reply: *const Data,
+        new_reply: *mut *mut Data,
+    ) -> i32;
+    /// The receive hook's state: a reply equal to `unreachable` is reported
+    /// as KRB5_KDC_UNREACH, as if that KDC had not answered; `replaced`
+    /// counts those replies.
+    struct Unreachable {
+        unreachable: Vec<u8>,
+        replaced: usize,
+    }
+    unsafe extern "C" fn unreachable_hook(
+        _context: *mut c_void,
+        data: *mut c_void,
+        code: i32,
+        _realm: *const Data,
+        _message: *const Data,
+        reply: *const Data,
+        _new_reply: *mut *mut Data,
+    ) -> i32 {
+        // SAFETY: data is the Unreachable acquire_located passed, live for
+        // the acquisition; reply is the received reply when code is 0.
+        unsafe {
+            let state = &mut *data.cast::<Unreachable>();
+            if code == 0 && !reply.is_null() {
+                let reply = &*reply;
+                let bytes =
+                    std::slice::from_raw_parts(reply.data.cast::<u8>(), reply.length as usize);
+                if bytes == state.unreachable.as_slice() {
+                    state.replaced += 1;
+                    return KRB5_KDC_UNREACH;
+                }
+            }
+            code
+        }
     }
 
     /// A loopback UDP KDC answering every request with one reply. It counts
@@ -218,18 +267,10 @@ mod located {
             self.thread.take().unwrap().join().unwrap();
         }
     }
-    /// A loopback port with no listener: krb5 finds it unreachable.
-    fn closed_port() -> u16 {
-        UdpSocket::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-    }
-
     /// Acquire user@TEST with the keytab from realm TEST whose KDCs are
-    /// `kdc` and whose primary is `primary`.
-    fn acquire_located(name: &str, kdc: u16, primary: u16) -> i32 {
+    /// `kdc` and whose primary is `primary`, with `hook` as the context's
+    /// receive hook.
+    fn acquire_located(name: &str, kdc: u16, primary: u16, hook: Option<&mut Unreachable>) -> i32 {
         let relations = [
             (["libdefaults", "default_realm"], "TEST".to_owned()),
             (["libdefaults", "dns_lookup_kdc"], "false".to_owned()),
@@ -263,6 +304,13 @@ mod located {
             let mut context = ptr::null_mut();
             assert_eq!(krb5_init_context_profile(profile, 1, &mut context), 0);
             profile_release(profile);
+            if let Some(hook) = hook {
+                krb5_set_kdc_recv_hook(
+                    context,
+                    unreachable_hook,
+                    (hook as *mut Unreachable).cast(),
+                );
+            }
             let mut client = ptr::null_mut();
             let principal = string("user@TEST").unwrap();
             assert_eq!(krb5_parse_name(context, principal.as_ptr(), &mut client), 0);
@@ -301,7 +349,7 @@ mod located {
     #[test]
     fn a_refusal_from_the_primary_is_not_retried() {
         let primary = Kdc::answering(krb_error(KDC_ERR_CLIENT_REVOKED));
-        let code = acquire_located("retry-primary", primary.port, primary.port);
+        let code = acquire_located("retry-primary", primary.port, primary.port, None);
         assert_eq!(code, ERROR_TABLE_BASE + KDC_ERR_CLIENT_REVOKED);
         assert_eq!(primary.exchanges(), 1);
     }
@@ -310,16 +358,29 @@ mod located {
     fn a_refusal_from_a_replica_is_retried_once_with_the_primary() {
         let replica = Kdc::answering(krb_error(KDC_ERR_POLICY));
         let primary = Kdc::answering(krb_error(KDC_ERR_CLIENT_REVOKED));
-        let code = acquire_located("retry-replica", replica.port, primary.port);
+        let code = acquire_located("retry-replica", replica.port, primary.port, None);
         assert_eq!(code, ERROR_TABLE_BASE + KDC_ERR_CLIENT_REVOKED);
         assert_eq!((replica.exchanges(), primary.exchanges()), (1, 1));
     }
 
     #[test]
     fn an_unreachable_primary_keeps_the_replica_refusal() {
+        // Both KDCs are owned; the receive hook turns the primary's answer
+        // into KRB5_KDC_UNREACH.
         let replica = Kdc::answering(krb_error(KDC_ERR_POLICY));
-        let code = acquire_located("retry-unreachable", replica.port, closed_port());
+        let primary = Kdc::answering(krb_error(KDC_ERR_CLIENT_REVOKED));
+        let mut hook = Unreachable {
+            unreachable: krb_error(KDC_ERR_CLIENT_REVOKED),
+            replaced: 0,
+        };
+        let code = acquire_located(
+            "retry-unreachable",
+            replica.port,
+            primary.port,
+            Some(&mut hook),
+        );
         assert_eq!(code, ERROR_TABLE_BASE + KDC_ERR_POLICY);
-        assert_eq!(replica.exchanges(), 1);
+        assert_eq!((replica.exchanges(), primary.exchanges()), (1, 1));
+        assert_eq!(hook.replaced, 1);
     }
 }

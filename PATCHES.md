@@ -32,7 +32,9 @@ a predicate `locate_kdc.c:971-1010` defines positively; the password path
 (`get_in_tkt.c:2031-2037`) retries on the positive test. A runtime context's
 exclusive transport returns before KDC location (`sendto_kdc.c:468-480`), so
 no replica is ever recorded and every final refusal ran a second AS exchange
-through the caller's transport, whose result replaced the first. The
+through the caller's transport. A second refusal could replace the original
+refusal; an unreachable or unresolvable retry already restored it
+(gic_keytab.c:326). The
 condition now matches its comment and the password path.
 
 Regressions, `runtime/keytab_retry_tests.rs`:
@@ -46,5 +48,6 @@ Regressions, `runtime/keytab_retry_tests.rs`:
   `a_refusal_from_the_primary_is_not_retried` (before, two exchanges),
   `a_refusal_from_a_replica_is_retried_once_with_the_primary` (before, no
   retry and the replica's refusal), and
-  `an_unreachable_primary_keeps_the_replica_refusal` (the saved-error
-  fallback the corrected branch now reaches).
+  `an_unreachable_primary_keeps_the_replica_refusal` (both KDCs owned; the
+  existing receive hook reports the primary's answer as `KRB5_KDC_UNREACH`,
+  and the replica's saved refusal is restored).
