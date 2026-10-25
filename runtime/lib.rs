@@ -500,3 +500,5 @@ impl SaslExchange {
         &mut self.exchange
     }
 }
+#[cfg(test)]
+mod keytab_retry_tests;

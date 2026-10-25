@@ -313,7 +313,7 @@ krb5_get_init_creds_keytab(krb5_context context,
     /* If the reply did not come from the primary kdc, try again with
      * the primary kdc. */
 
-    if (!k5_kdclist_any_replicas(context, kdcs)) {
+    if (k5_kdclist_any_replicas(context, kdcs)) {
         k5_save_ctx_error(context, ret, &errsave);
         ret = get_init_creds_keytab(context, creds, client, keytab,
                                     start_time, in_tkt_service, options,
