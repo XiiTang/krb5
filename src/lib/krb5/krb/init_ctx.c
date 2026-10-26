@@ -610,7 +610,7 @@ krb5_is_permitted_enctype(krb5_context context, krb5_enctype etype)
 /* A caller-owned context has no system profile, tracing, or dynamic plugins. */
 krb5_error_code KRB5_CALLCONV
 krb5_init_runtime_context(const char *realm, krb5_pre_send_fn hook, void *data,
-                          krb5_context *out)
+                          krb5_runtime_reply *reply, krb5_context *out)
 {
     profile_t profile = NULL;
     krb5_error_code ret;
@@ -632,8 +632,113 @@ krb5_init_runtime_context(const char *realm, krb5_pre_send_fn hook, void *data,
         if (ret) goto cleanup;
     }
     ret = krb5_init_context_profile(profile, KRB5_INIT_CONTEXT_SECURE, out);
-    if (!ret) krb5_set_kdc_send_hook_exclusive(*out, hook, data);
+    if (!ret) {
+        krb5_set_kdc_send_hook_exclusive(*out, hook, data);
+        (*out)->runtime_reply = reply;
+    }
 cleanup:
     profile_release(profile);
     return ret;
+}
+
+/* A selection owns only the wire error code and e-text. Never read e-data. */
+struct runtime_selection {
+    krb5_boolean present;
+    krb5_runtime_exchange exchange;
+    krb5_int32 error;
+    krb5_error_code status;
+    krb5_data text;
+};
+struct _krb5_runtime_reply {
+    struct runtime_selection candidate, selected;
+};
+
+static void
+clear_selection(struct runtime_selection *s)
+{
+    krb5_free_data_contents(NULL, &s->text);
+    memset(s, 0, sizeof(*s));
+}
+
+krb5_error_code KRB5_CALLCONV
+krb5_runtime_reply_new(krb5_runtime_reply **out)
+{
+    *out = calloc(1, sizeof(**out));
+    return *out == NULL ? ENOMEM : 0;
+}
+
+void KRB5_CALLCONV
+krb5_runtime_reply_clear(krb5_runtime_reply *reply)
+{
+    if (reply == NULL) return;
+    clear_selection(&reply->candidate);
+    clear_selection(&reply->selected);
+}
+
+void KRB5_CALLCONV
+krb5_runtime_reply_free(krb5_runtime_reply *reply)
+{
+    krb5_runtime_reply_clear(reply);
+    free(reply);
+}
+
+krb5_boolean KRB5_CALLCONV
+krb5_runtime_reply_get(const krb5_runtime_reply *reply,
+                       krb5_runtime_exchange *exchange, krb5_int32 *error,
+                       const krb5_data **text)
+{
+    if (reply == NULL || !reply->selected.present) return FALSE;
+    *exchange = reply->selected.exchange;
+    *error = reply->selected.error;
+    *text = &reply->selected.text;
+    return TRUE;
+}
+
+static void
+move_selection(struct runtime_selection *s, krb5_runtime_exchange exchange,
+                 krb5_error *err, krb5_error_code status)
+{
+    /* A zero status continues the engine's loop, even if the wire code wrapped. */
+    if (status == 0) return;
+    clear_selection(s);
+    s->present = TRUE;
+    s->exchange = exchange;
+    s->error = err->error;
+    s->status = status;
+    s->text = err->text;
+    err->text = empty_data();
+}
+
+void
+k5_runtime_reply_select(krb5_context context, krb5_runtime_exchange exchange,
+                         krb5_error *err, krb5_error_code status)
+{
+    if (context->runtime_reply == NULL) return;
+    move_selection(&context->runtime_reply->selected, exchange, err, status);
+}
+
+void
+k5_runtime_reply_offer(krb5_context context, krb5_error *err, krb5_error_code status)
+{
+    if (context->runtime_reply == NULL) return;
+    move_selection(&context->runtime_reply->candidate,
+                     KRB5_RUNTIME_EXCHANGE_TGS, err, status);
+}
+
+void
+k5_runtime_reply_promote(krb5_context context, krb5_error_code status)
+{
+    krb5_runtime_reply *r = context->runtime_reply;
+    if (r == NULL || !r->candidate.present || r->candidate.status != status)
+        return;
+    clear_selection(&r->selected);
+    r->selected = r->candidate;
+    memset(&r->candidate, 0, sizeof(r->candidate));
+}
+
+void
+k5_runtime_reply_discard_candidate(krb5_context context)
+{
+    if (context->runtime_reply != NULL)
+        clear_selection(&context->runtime_reply->candidate);
 }

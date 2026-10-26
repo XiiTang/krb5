@@ -1260,6 +1260,7 @@ init_creds_step_request(krb5_context context,
                         krb5_data *out)
 {
     krb5_error_code code;
+    krb5_boolean peer = FALSE;
     krb5_preauthtype pa_type;
     krb5_data copy;
     struct errinfo save = EMPTY_ERRINFO;
@@ -1315,6 +1316,7 @@ init_creds_step_request(krb5_context context,
     } else if (rcode == KDC_ERR_PREAUTH_FAILED) {
         /* Report the KDC-side failure code if we can't try another mech. */
         code = KRB5KDC_ERR_PREAUTH_FAILED;
+        peer = TRUE;
     } else if (rcode && rcode != KDC_ERR_PREAUTH_REQUIRED) {
         /* Retrying after an error (possibly mechanism-specific), using error
          * padata to figure out what to change. */
@@ -1326,6 +1328,7 @@ init_creds_step_request(krb5_context context,
         if (code) {
             krb5_clear_error_message(context);
             code = ctx->err_reply->error + ERROR_TABLE_BASE_krb5;
+            peer = TRUE;
         }
     }
     /* Don't continue after a keyboard interrupt. */
@@ -1351,6 +1354,7 @@ init_creds_step_request(krb5_context context,
                 code = k5_restore_ctx_error(context, &save);
             goto cleanup;
         }
+        peer = FALSE;
     }
     if (ctx->request->padata == NULL)
         TRACE_INIT_CREDS_PREAUTH_NONE(context);
@@ -1363,6 +1367,7 @@ init_creds_step_request(krb5_context context,
         ctx->encoded_previous_request = NULL;
     }
     if (ctx->info_pa_permitted) {
+        peer = FALSE;
         code = k5_add_empty_pa_data(&ctx->request->padata,
                                     KRB5_PADATA_AS_FRESHNESS);
         if (code)
@@ -1402,6 +1407,9 @@ init_creds_step_request(krb5_context context,
         goto cleanup;
 
 cleanup:
+    if (peer && code == (krb5_error_code)ctx->err_reply->error + ERROR_TABLE_BASE_krb5)
+        k5_runtime_reply_select(context, KRB5_RUNTIME_EXCHANGE_AS,
+                                 ctx->err_reply, code);
     krb5_free_pa_data(context, ctx->request->padata);
     ctx->request->padata = NULL;
     k5_clear_error(&save);
@@ -1762,6 +1770,8 @@ init_creds_step_reply(krb5_context context,
             } else {
                 /* error + no hints (or no preauth mech) = give up */
                 code = (krb5_error_code)reply_code + ERROR_TABLE_BASE_krb5;
+                k5_runtime_reply_select(context, KRB5_RUNTIME_EXCHANGE_AS,
+                                         ctx->err_reply, code);
             }
         }
 

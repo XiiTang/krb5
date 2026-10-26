@@ -468,6 +468,7 @@ k5_sendto_kdc(krb5_context context, const krb5_data *message,
     if (context->kdc_io_exclusive) {
         if (context->kdc_send_hook == NULL)
             return KRB5_KDC_UNREACH;
+        k5_runtime_reply_discard_candidate(context);
         retval = context->kdc_send_hook(context, context->kdc_send_hook_data,
                                         realm, message, &hook_message, &hook_reply);
         krb5_free_data(context, hook_message);

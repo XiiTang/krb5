@@ -49,31 +49,31 @@ static void roundtrip(imk_credential *credential,gss_cred_id_t acceptor){
     imk_buffer token={0},reply={0};
     OM_uint32 major,minor,flags;int complete=0,encrypted=0;uint32_t limit;
     const char payload[]="exact protected bytes";
-    assert(imk_exchange_new(credential,"imap/server.test@BOUNDLESS.TEST",IMK_MECHANISM_KERBEROS,0,&exchange)==0);
-    assert(imk_step(exchange,NULL,0,&token,&complete)==0 && !complete && token.len);
+    assert(imk_exchange_new(credential,"imap/server.test@BOUNDLESS.TEST",IMK_MECHANISM_KERBEROS,0,&exchange,NULL)==0);
+    assert(imk_step(exchange,NULL,0,&token,&complete,NULL)==0 && !complete && token.len);
     input.length=token.len;input.value=token.data;
     major=gss_accept_sec_context(&minor,&server,acceptor,&input,GSS_C_NO_CHANNEL_BINDINGS,NULL,NULL,&output,&flags,NULL,NULL);
     if(major)fprintf(stderr,"accept failed: %u/%u\n",major,minor);
     assert(major==GSS_S_COMPLETE);
     imk_buffer_free(&token);
-    assert(imk_step(exchange,output.value,output.length,&token,&complete)==0 && complete);
+    assert(imk_step(exchange,output.value,output.length,&token,&complete,NULL)==0 && complete);
     assert(token.len==0);imk_buffer_free(&token);gss_release_buffer(&minor,&output);
     for(int confidential=0;confidential<=1;confidential++){
-        assert(imk_wrap_limit(exchange,confidential,65536,&limit)==0 && limit>0 && limit<=65536);
-        assert(imk_wrap(exchange,confidential,payload,sizeof(payload),&token)==0);
+        assert(imk_wrap_limit(exchange,confidential,65536,&limit,NULL)==0 && limit>0 && limit<=65536);
+        assert(imk_wrap(exchange,confidential,payload,sizeof(payload),&token,NULL)==0);
         input.value=token.data;input.length=token.len;
         assert(gss_unwrap(&minor,server,&input,&output,&encrypted,NULL)==GSS_S_COMPLETE && encrypted==confidential);
         assert(output.length==sizeof(payload)&&memcmp(output.value,payload,sizeof(payload))==0);
         gss_release_buffer(&minor,&output);imk_buffer_free(&token);
         plain.value=(void*)payload;plain.length=sizeof(payload);
         assert(gss_wrap(&minor,server,confidential,GSS_C_QOP_DEFAULT,&plain,&encrypted,&wrapped)==GSS_S_COMPLETE);
-        assert(imk_unwrap(exchange,confidential,wrapped.value,wrapped.length,&reply)==0);
+        assert(imk_unwrap(exchange,confidential,wrapped.value,wrapped.length,&reply,NULL)==0);
         assert(reply.len==sizeof(payload)&&memcmp(reply.data,payload,reply.len)==0);
         imk_buffer_free(&reply);
-        assert(imk_unwrap(exchange,confidential,wrapped.value,wrapped.length,&reply)!=0); /* reject replay supplementary status */
+        assert(imk_unwrap(exchange,confidential,wrapped.value,wrapped.length,&reply,NULL)!=0); /* reject replay supplementary status */
         imk_buffer_free(&reply);gss_release_buffer(&minor,&wrapped);
     }
-    assert(imk_mic(exchange,payload,sizeof(payload),&token)==0);
+    assert(imk_mic(exchange,payload,sizeof(payload),&token,NULL)==0);
     input.value=token.data;input.length=token.len;
     assert(gss_verify_mic(&minor,server,&plain,&input,NULL)==GSS_S_COMPLETE);
     imk_buffer_free(&token);
@@ -87,22 +87,22 @@ int main(int argc,char **argv){
     gss_cred_id_t acceptor=GSS_C_NO_CREDENTIAL;
     OM_uint32 major,minor;int32_t ret;int after_first;
     assert(argc==5);transport.port=atoi(argv[1]);keytab=file(argv[2]);ccache=file(argv[4]);
-    assert(krb5_init_runtime_context("BOUNDLESS.TEST",NULL,NULL,&ctx)==0);
+    assert(krb5_init_runtime_context("BOUNDLESS.TEST",NULL,NULL,NULL,&ctx)==0);
     assert(krb5_kt_resolve(ctx,argv[3],&server_key)==0);
     assert(krb5_parse_name(ctx,"imap/server.test@BOUNDLESS.TEST",&service)==0);
     major=gss_krb5_import_cred(&minor,NULL,service,server_key,&acceptor);
     if(major)fprintf(stderr,"import acceptor failed: %u/%u\n",major,minor);
     assert(major==GSS_S_COMPLETE);
-    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,IMK_SOURCE_KEYTAB,3600,0,io,&transport,&credential);
+    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,IMK_SOURCE_KEYTAB,3600,0,io,&transport,NULL,&credential,NULL);
     if(ret)fprintf(stderr,"credential failed: %d\n",ret);
     assert(ret==0 && transport.calls>0);
     roundtrip(credential,acceptor);after_first=transport.calls;
     roundtrip(credential,acceptor);assert(transport.calls==after_first); /* private cached service ticket */
     imk_credential_free(credential);credential=NULL;
-    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",ccache.data,ccache.len,IMK_SOURCE_CCACHE,0,0,io,&transport,&credential);
+    ret=imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",ccache.data,ccache.len,IMK_SOURCE_CCACHE,0,0,io,&transport,NULL,&credential,NULL);
     assert(ret==0);roundtrip(credential,acceptor);imk_credential_free(credential);credential=NULL;
     transport.calls=0;transport.fail=1;
-    assert(imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,IMK_SOURCE_KEYTAB,3600,0,io,&transport,&credential)!=0);
+    assert(imk_credential_new("user@BOUNDLESS.TEST","BOUNDLESS.TEST",keytab.data,keytab.len,IMK_SOURCE_KEYTAB,3600,0,io,&transport,NULL,&credential,NULL)!=0);
     assert(credential==NULL && transport.calls==1);
     imk_buffer_free(&keytab);imk_buffer_free(&ccache);
     gss_release_cred(&minor,&acceptor);krb5_free_principal(ctx,service);krb5_kt_close(ctx,server_key);krb5_free_context(ctx);

@@ -524,3 +524,9 @@ EXPORTS
 	krb5_kt_import_memory @483
 
 	krb5_init_runtime_context @484
+
+    krb5_runtime_reply_new @485
+    krb5_runtime_reply_free @486
+    krb5_runtime_reply_clear @487
+    krb5_runtime_reply_get @488
+    k5_runtime_reply_select @489 ; PRIVATE

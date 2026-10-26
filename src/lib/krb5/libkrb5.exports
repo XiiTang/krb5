@@ -664,3 +664,9 @@ krb5_cc_import_memory
 krb5_kt_import_memory
 
 krb5_init_runtime_context
+
+krb5_runtime_reply_new
+krb5_runtime_reply_free
+krb5_runtime_reply_clear
+krb5_runtime_reply_get
+k5_runtime_reply_select

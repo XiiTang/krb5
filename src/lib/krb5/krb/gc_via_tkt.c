@@ -216,6 +216,7 @@ krb5int_process_tgs_reply(krb5_context context,
             break;
             }
         }
+        k5_runtime_reply_offer(context, err_reply, retval);
         krb5_free_error(context, err_reply);
         goto cleanup;
     } else if (!krb5_is_tgs_rep(response_data)) {

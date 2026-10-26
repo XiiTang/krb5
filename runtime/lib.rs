@@ -2,19 +2,75 @@
 //! Values are intentionally !Send and !Sync: one joined worker owns a credential
 //! and its exchanges. No API reads a cache/keytab path or changes environment.
 use std::{
+    cell::RefCell,
     ffi::{CString, c_char, c_int, c_void},
     ptr::{self, NonNull},
     rc::Rc,
 };
 use zeroize::Zeroizing;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     InvalidInput,
+    InvalidState,
+    PeerRejected(ErrorReply),
+    PeerOffer(OfferFault),
+    Credential(CredentialInput),
+    Configuration(ConfigurationFault),
     Native(i32),
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorReply {
+    code: i32,
+    text: Box<[u8]>,
+    exchange: ReplyExchange,
+}
+impl ErrorReply {
+    pub fn code(&self) -> i32 {
+        self.code
+    }
+    pub fn text(&self) -> &[u8] {
+        &self.text
+    }
+    pub fn exchange(&self) -> &ReplyExchange {
+        &self.exchange
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplyExchange {
+    As { realm: Box<[u8]> },
+    Tgs { realm: Box<[u8]> },
+    Ap,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferFault {
+    Length,
+    Unoffered(SecurityLayer),
+    Size,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialInput {
+    Principal,
+    Ccache,
+    Keytab,
+    Password,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigurationFault {
+    LifetimeRange,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Kerberos operation failed ({self:?})")
+        f.write_str(match self {
+            Self::InvalidInput => "Kerberos input is invalid",
+            Self::InvalidState => "the Kerberos exchange is not in a state for this operation",
+            Self::PeerRejected(_) => "the peer rejected the Kerberos exchange",
+            Self::PeerOffer(_) => "the peer's security-layer offer is unusable",
+            Self::Credential(_) => "a Kerberos credential input is invalid",
+            Self::Configuration(_) => "a Kerberos configuration value is out of range",
+            Self::Native(code) => {
+                return write!(f, "Kerberos operation failed with native status {code}");
+            }
+        })
     }
 }
 impl std::error::Error for Error {}
@@ -50,7 +106,38 @@ impl Drop for Buffer {
         unsafe { imk_buffer_free(self) }
     }
 }
+#[repr(C)]
+#[derive(Default)]
+struct Status {
+    kind: i32,
+    input: i32,
+}
+struct Reply(NonNull<c_void>);
+impl Reply {
+    fn new() -> Result<Self> {
+        let mut out = ptr::null_mut();
+        let code = unsafe { imk_reply_new(&mut out) };
+        if code != 0 {
+            return Err(Error::Native(code));
+        }
+        Ok(Self(NonNull::new(out).ok_or(Error::InvalidInput)?))
+    }
+}
+impl Drop for Reply {
+    fn drop(&mut self) {
+        unsafe { imk_reply_free(self.0.as_ptr()) }
+    }
+}
 unsafe extern "C" {
+    fn imk_reply_new(out: *mut *mut c_void) -> i32;
+    fn imk_reply_free(reply: *mut c_void);
+    fn imk_reply_get(
+        reply: *const c_void,
+        exchange: *mut i32,
+        error: *mut i32,
+        text: *mut *const c_void,
+        len: *mut usize,
+    ) -> c_int;
     fn imk_alloc(len: usize) -> *mut c_void;
     fn imk_buffer_free(buffer: *mut Buffer);
     fn imk_credential_new(
@@ -71,7 +158,9 @@ unsafe extern "C" {
             *mut usize,
         ) -> c_int,
         context: *mut c_void,
+        reply: *mut c_void,
         out: *mut *mut c_void,
+        status: *mut Status,
     ) -> i32;
     fn imk_credential_free(credential: *mut c_void);
     fn imk_exchange_new(
@@ -80,6 +169,7 @@ unsafe extern "C" {
         mechanism: c_int,
         delegate: c_int,
         out: *mut *mut c_void,
+        status: *mut Status,
     ) -> i32;
     fn imk_exchange_free(exchange: *mut c_void);
     fn imk_step(
@@ -88,6 +178,7 @@ unsafe extern "C" {
         len: usize,
         out: *mut Buffer,
         complete: *mut c_int,
+        status: *mut Status,
     ) -> i32;
     fn imk_wrap(
         exchange: *mut c_void,
@@ -95,6 +186,7 @@ unsafe extern "C" {
         data: *const c_void,
         len: usize,
         out: *mut Buffer,
+        status: *mut Status,
     ) -> i32;
     fn imk_unwrap(
         exchange: *mut c_void,
@@ -102,17 +194,26 @@ unsafe extern "C" {
         data: *const c_void,
         len: usize,
         out: *mut Buffer,
+        status: *mut Status,
     ) -> i32;
-    fn imk_mic(exchange: *mut c_void, data: *const c_void, len: usize, out: *mut Buffer) -> i32;
+    fn imk_mic(
+        exchange: *mut c_void,
+        data: *const c_void,
+        len: usize,
+        out: *mut Buffer,
+        status: *mut Status,
+    ) -> i32;
     fn imk_wrap_limit(
         exchange: *mut c_void,
         confidential: c_int,
         output: u32,
         input: *mut u32,
+        status: *mut Status,
     ) -> i32;
 }
 struct Callback {
-    transport: Transport,
+    transport: RefCell<Transport>,
+    last_realm: RefCell<Option<Box<[u8]>>>,
 }
 unsafe extern "C" fn transport(
     data: *mut c_void,
@@ -126,10 +227,11 @@ unsafe extern "C" fn transport(
     // SAFETY: native calls are serialized on the owning thread and the Box is
     // retained until native credential destruction. Never unwind across C.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-        let callback = &mut *data.cast::<Callback>();
+        let callback = &*data.cast::<Callback>();
         let realm = std::slice::from_raw_parts(realm.cast::<u8>(), realm_len);
         let request = std::slice::from_raw_parts(request.cast::<u8>(), request_len);
-        let response = (callback.transport)(realm, request)?;
+        *callback.last_realm.borrow_mut() = Some(realm.into());
+        let response = (*callback.transport.borrow_mut())(realm, request)?;
         if response.is_empty() || response.len() > u32::MAX as usize {
             return Err(());
         }
@@ -144,18 +246,69 @@ unsafe extern "C" fn transport(
     }));
     if matches!(result, Ok(Ok(()))) { 0 } else { 1 }
 }
-fn check(code: i32) -> Result<()> {
+// The only native-result conversion and the only ErrorReply constructor.
+fn check(code: i32, status: &Status, reply: &Reply, callback: &Callback) -> Result<()> {
     if code == 0 {
-        Ok(())
-    } else {
-        Err(Error::Native(code))
+        return Ok(());
     }
+    let error = match status.kind {
+        2 => match status.input {
+            1 => Error::Credential(CredentialInput::Principal),
+            2 => Error::Credential(CredentialInput::Ccache),
+            3 => Error::Credential(CredentialInput::Keytab),
+            4 => Error::Credential(CredentialInput::Password),
+            _ => Error::Native(code),
+        },
+        3 => Error::Configuration(ConfigurationFault::LifetimeRange),
+        4 => Error::InvalidState,
+        0 => {
+            let (mut exchange, mut error, mut len) = (0, 0, 0);
+            let mut text = ptr::null();
+            if unsafe {
+                imk_reply_get(
+                    reply.0.as_ptr(),
+                    &mut exchange,
+                    &mut error,
+                    &mut text,
+                    &mut len,
+                )
+            } == 0
+            {
+                return Err(Error::Native(code));
+            }
+            let realm = || callback.last_realm.borrow().clone();
+            let exchange = match exchange {
+                1 => realm().map(|realm| ReplyExchange::As { realm }),
+                2 => realm().map(|realm| ReplyExchange::Tgs { realm }),
+                3 => Some(ReplyExchange::Ap),
+                _ => None,
+            };
+            let Some(exchange) = exchange else {
+                return Err(Error::Native(code));
+            };
+            // An omitted e-text has a NULL pointer. Never read it when empty.
+            let text = if len == 0 {
+                Box::<[u8]>::default()
+            } else {
+                // SAFETY: the selected slot owns these bytes until clear/free.
+                unsafe { std::slice::from_raw_parts(text.cast::<u8>(), len) }.into()
+            };
+            Error::PeerRejected(ErrorReply {
+                code: error,
+                text,
+                exchange,
+            })
+        }
+        _ => Error::Native(code),
+    };
+    Err(error)
 }
 fn string(s: &str) -> Result<CString> {
     CString::new(s).map_err(|_| Error::InvalidInput)
 }
 struct Inner {
     native: NonNull<c_void>,
+    reply: Reply,
     _callback: Box<Callback>,
 }
 impl Drop for Inner {
@@ -210,26 +363,37 @@ impl Credential {
                 initial_ticket_lifetime_seconds,
             } => (password, 2, initial_ticket_lifetime_seconds),
         };
-        let mut callback = Box::new(Callback {
-            transport: transport_fn,
+        let reply = Reply::new()?;
+        let callback = Box::new(Callback {
+            transport: RefCell::new(transport_fn),
+            last_realm: RefCell::new(None),
         });
         let mut out = ptr::null_mut();
-        check(unsafe {
-            imk_credential_new(
-                principal.as_ptr(),
-                realm.as_ptr(),
-                bytes.as_ptr().cast(),
-                bytes.len(),
-                source,
-                lifetime,
-                forwardable.into(),
-                transport,
-                (&mut *callback as *mut Callback).cast(),
-                &mut out,
-            )
-        })?;
+        let mut status = Status::default();
+        check(
+            unsafe {
+                imk_credential_new(
+                    principal.as_ptr(),
+                    realm.as_ptr(),
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    source,
+                    lifetime,
+                    forwardable.into(),
+                    transport,
+                    (&*callback as *const Callback).cast_mut().cast(),
+                    reply.0.as_ptr(),
+                    &mut out,
+                    &mut status,
+                )
+            },
+            &status,
+            &reply,
+            &callback,
+        )?;
         Ok(Self(Rc::new(Inner {
             native: NonNull::new(out).ok_or(Error::InvalidInput)?,
+            reply,
             _callback: callback,
         })))
     }
@@ -248,18 +412,25 @@ impl Credential {
     ) -> Result<Exchange> {
         let target = string(target)?;
         let mut out = ptr::null_mut();
-        check(unsafe {
-            imk_exchange_new(
-                self.0.native.as_ptr(),
-                target.as_ptr(),
-                match mechanism {
-                    Mechanism::Kerberos => 0,
-                    Mechanism::Spnego => 1,
-                },
-                delegate.into(),
-                &mut out,
-            )
-        })?;
+        let mut status = Status::default();
+        check(
+            unsafe {
+                imk_exchange_new(
+                    self.0.native.as_ptr(),
+                    target.as_ptr(),
+                    match mechanism {
+                        Mechanism::Kerberos => 0,
+                        Mechanism::Spnego => 1,
+                    },
+                    delegate.into(),
+                    &mut out,
+                    &mut status,
+                )
+            },
+            &status,
+            &self.0.reply,
+            &self.0._callback,
+        )?;
         Ok(Exchange {
             native: NonNull::new(out).ok_or(Error::InvalidInput)?,
             _credential: self.clone(),
@@ -279,65 +450,100 @@ impl Exchange {
     pub fn step(&mut self, input: &[u8]) -> Result<(Zeroizing<Vec<u8>>, bool)> {
         let mut out = Buffer::default();
         let mut complete = 0;
-        check(unsafe {
-            imk_step(
-                self.native.as_ptr(),
-                input.as_ptr().cast(),
-                input.len(),
-                &mut out,
-                &mut complete,
-            )
-        })?;
+        let mut status = Status::default();
+        check(
+            unsafe {
+                imk_step(
+                    self.native.as_ptr(),
+                    input.as_ptr().cast(),
+                    input.len(),
+                    &mut out,
+                    &mut complete,
+                    &mut status,
+                )
+            },
+            &status,
+            &self._credential.0.reply,
+            &self._credential.0._callback,
+        )?;
         Ok((out.take(), complete != 0))
     }
     pub fn wrap(&mut self, confidential: bool, input: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         let mut out = Buffer::default();
-        check(unsafe {
-            imk_wrap(
-                self.native.as_ptr(),
-                confidential.into(),
-                input.as_ptr().cast(),
-                input.len(),
-                &mut out,
-            )
-        })?;
+        let mut status = Status::default();
+        check(
+            unsafe {
+                imk_wrap(
+                    self.native.as_ptr(),
+                    confidential.into(),
+                    input.as_ptr().cast(),
+                    input.len(),
+                    &mut out,
+                    &mut status,
+                )
+            },
+            &status,
+            &self._credential.0.reply,
+            &self._credential.0._callback,
+        )?;
         Ok(out.take())
     }
     pub fn unwrap(&mut self, confidential: bool, input: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         let mut out = Buffer::default();
-        check(unsafe {
-            imk_unwrap(
-                self.native.as_ptr(),
-                confidential.into(),
-                input.as_ptr().cast(),
-                input.len(),
-                &mut out,
-            )
-        })?;
+        let mut status = Status::default();
+        check(
+            unsafe {
+                imk_unwrap(
+                    self.native.as_ptr(),
+                    confidential.into(),
+                    input.as_ptr().cast(),
+                    input.len(),
+                    &mut out,
+                    &mut status,
+                )
+            },
+            &status,
+            &self._credential.0.reply,
+            &self._credential.0._callback,
+        )?;
         Ok(out.take())
     }
     pub fn mic(&mut self, input: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         let mut out = Buffer::default();
-        check(unsafe {
-            imk_mic(
-                self.native.as_ptr(),
-                input.as_ptr().cast(),
-                input.len(),
-                &mut out,
-            )
-        })?;
+        let mut status = Status::default();
+        check(
+            unsafe {
+                imk_mic(
+                    self.native.as_ptr(),
+                    input.as_ptr().cast(),
+                    input.len(),
+                    &mut out,
+                    &mut status,
+                )
+            },
+            &status,
+            &self._credential.0.reply,
+            &self._credential.0._callback,
+        )?;
         Ok(out.take())
     }
     pub fn wrap_limit(&mut self, confidential: bool, output: u32) -> Result<u32> {
         let mut input = 0;
-        check(unsafe {
-            imk_wrap_limit(
-                self.native.as_ptr(),
-                confidential.into(),
-                output,
-                &mut input,
-            )
-        })?;
+        let mut status = Status::default();
+        check(
+            unsafe {
+                imk_wrap_limit(
+                    self.native.as_ptr(),
+                    confidential.into(),
+                    output,
+                    &mut input,
+                    &mut status,
+                )
+            },
+            &status,
+            &self._credential.0.reply,
+            &self._credential.0._callback,
+        )?;
         Ok(input)
     }
 }
@@ -346,14 +552,21 @@ mod tests {
     use super::*;
     #[test]
     fn a_large_kdc_reply_reaches_the_native_message_parser() {
-        let result = Credential::new("user@TEST", "TEST",
-            Source::Password { password: b"password", initial_ticket_lifetime_seconds: 600 },
-            false, Box::new(|_, request| {
+        let result = Credential::new(
+            "user@TEST",
+            "TEST",
+            Source::Password {
+                password: b"password",
+                initial_ticket_lifetime_seconds: 600,
+            },
+            false,
+            Box::new(|_, request| {
                 assert!(!request.is_empty());
                 // An independent reply of this size passes both bridges. MIT
                 // then classifies its leading zero as a wrong message type.
                 Ok(Zeroizing::new(vec![0; 17 * 1024 * 1024]))
-            }));
+            }),
+        );
         assert!(matches!(result, Err(Error::Native(-1_765_328_344))));
     }
     #[test]
@@ -441,41 +654,45 @@ impl Credential {
         })
     }
 }
+fn offer(layer: SecurityLayer, offer: &[u8]) -> std::result::Result<(u8, u32), OfferFault> {
+    if offer.len() != 4 {
+        return Err(OfferFault::Length);
+    }
+    let maximum = u32::from_be_bytes([0, offer[1], offer[2], offer[3]]);
+    let selected = match layer {
+        SecurityLayer::AuthOnly => 1,
+        SecurityLayer::Integrity => 2,
+        SecurityLayer::Confidentiality => 4,
+    };
+    if offer[0] & selected == 0 {
+        return Err(OfferFault::Unoffered(layer));
+    }
+    if (offer[0] & 6 == 0 && maximum != 0) || (layer != SecurityLayer::AuthOnly && maximum == 0) {
+        return Err(OfferFault::Size);
+    }
+    Ok((selected, maximum))
+}
 impl SaslExchange {
     pub fn step(&mut self, input: &[u8]) -> Result<(Zeroizing<Vec<u8>>, bool)> {
         if self.finished {
-            return Err(Error::InvalidInput);
+            return Err(Error::InvalidState);
         }
         if !self.context_complete {
             let (bytes, complete) = self.exchange.step(input)?;
             self.context_complete = complete;
             return Ok((bytes, false));
         }
-        let offer = self.exchange.unwrap(false, input)?;
-        if offer.len() != 4 {
-            return Err(Error::InvalidInput);
-        }
-        let maximum = u32::from_be_bytes([0, offer[1], offer[2], offer[3]]);
-        let selected = match self.layer {
-            SecurityLayer::AuthOnly => 1,
-            SecurityLayer::Integrity => 2,
-            SecurityLayer::Confidentiality => 4,
-        };
-        if offer[0] & selected == 0 || (offer[0] & 6 == 0 && maximum != 0) {
-            return Err(Error::InvalidInput);
-        }
+        let bytes = self.exchange.unwrap(false, input)?;
+        let (selected, maximum) = offer(self.layer, &bytes).map_err(Error::PeerOffer)?;
         let mut selection = Zeroizing::new(vec![selected, 0, 0, 0]);
         if self.layer != SecurityLayer::AuthOnly {
-            if maximum == 0 {
-                return Err(Error::InvalidInput);
-            }
             let confidential = self.layer == SecurityLayer::Confidentiality;
             // Bounded codec buffers; this is not a cumulative traffic quota.
             let input_token = 65536u32;
             let output_token = maximum.min(65536);
             let plaintext = self.exchange.wrap_limit(confidential, output_token)?;
             if plaintext == 0 {
-                return Err(Error::InvalidInput);
+                return Err(Error::PeerOffer(OfferFault::Size));
             }
             selection[1..4].copy_from_slice(&input_token.to_be_bytes()[1..4]);
             self.protection = Some(Protection {
@@ -492,7 +709,7 @@ impl SaslExchange {
     }
     pub fn protection(&self) -> Result<Option<Protection>> {
         if !self.finished {
-            return Err(Error::InvalidInput);
+            return Err(Error::InvalidState);
         }
         Ok(self.protection)
     }
@@ -502,3 +719,8 @@ impl SaslExchange {
 }
 #[cfg(test)]
 mod keytab_retry_tests;
+
+#[cfg(test)]
+mod reply_tests;
+#[cfg(test)]
+mod test_support;

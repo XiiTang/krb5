@@ -17,7 +17,7 @@ int main(void) {
     krb5_context ctx, copied;
     krb5_data request=string2data("request"),realm=string2data("NO-DISCOVERY.invalid"), reply;
     int primary=0,calls=0;
-    assert(krb5_init_runtime_context("NO-DISCOVERY.invalid",callback,&calls,&ctx)==0);
+    assert(krb5_init_runtime_context("NO-DISCOVERY.invalid",callback,&calls,NULL,&ctx)==0);
     assert(ctx->profile_secure && ctx->kdc_io_exclusive && !ctx->trace_callback);
     assert(krb5_copy_context(ctx,&copied)==0);
     assert(krb5_sendto_kdc(copied,&request,&realm,&reply,&primary,0)==0);

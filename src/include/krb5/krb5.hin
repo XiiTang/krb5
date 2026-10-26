@@ -8616,9 +8616,26 @@ krb5_set_kdc_recv_hook(krb5_context context, krb5_post_recv_fn recv_hook,
 #pragma pack(pop)
 #endif
 
+typedef struct _krb5_runtime_reply krb5_runtime_reply;
+typedef enum {
+    KRB5_RUNTIME_EXCHANGE_AS = 1,
+    KRB5_RUNTIME_EXCHANGE_TGS = 2,
+    KRB5_RUNTIME_EXCHANGE_AP = 3
+} krb5_runtime_exchange;
+krb5_error_code KRB5_CALLCONV
+krb5_runtime_reply_new(krb5_runtime_reply **out);
+void KRB5_CALLCONV krb5_runtime_reply_free(krb5_runtime_reply *reply);
+void KRB5_CALLCONV krb5_runtime_reply_clear(krb5_runtime_reply *reply);
+/* The selected reply's text view lasts until clear or free. */
+krb5_boolean KRB5_CALLCONV
+krb5_runtime_reply_get(const krb5_runtime_reply *reply,
+                       krb5_runtime_exchange *exchange, krb5_int32 *error,
+                       const krb5_data **text);
+
 krb5_error_code KRB5_CALLCONV
 krb5_init_runtime_context(const char *realm, krb5_pre_send_fn send_hook,
-                          void *data, krb5_context *context_out);
+                          void *data, krb5_runtime_reply *reply,
+                          krb5_context *context_out);
 
 /* Boundless: exclusive, caller-owned KDC transport; never perform native discovery or I/O. */
 void KRB5_CALLCONV

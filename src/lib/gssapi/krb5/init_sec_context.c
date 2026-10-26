@@ -769,10 +769,13 @@ mutual_auth(
             code = krb5_rd_error(context, &body, &krb_error);
             if (code)
                 goto fail;
-            if (krb_error->error)
+            if (krb_error->error) {
                 code = (krb5_error_code)krb_error->error + ERROR_TABLE_BASE_krb5;
-            else
+                k5_runtime_reply_select(context, KRB5_RUNTIME_EXCHANGE_AP,
+                                         krb_error, code);
+            } else {
                 code = 0;
+            }
             krb5_free_error(context, krb_error);
             goto fail;
         } else if (toktype != KG_TOK_CTX_AP_REP) {
@@ -1016,7 +1019,7 @@ krb5_gss_init_context (krb5_context *ctxp)
 #endif
 
 #ifdef BOUNDLESS_STATIC_GSS
-    return krb5_init_runtime_context("BOUNDLESS.INVALID", NULL, NULL, ctxp);
+    return krb5_init_runtime_context("BOUNDLESS.INVALID", NULL, NULL, NULL, ctxp);
 #else
     return krb5_init_context(ctxp);
 #endif

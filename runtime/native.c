@@ -15,6 +15,7 @@ struct imk_credential {
     gss_cred_id_t handle;
     imk_transport transport;
     void *transport_data;
+    imk_reply *reply; /* borrowed from Rust, outlives native destruction */
 };
 struct imk_exchange {
     imk_credential *credential;
@@ -37,6 +38,27 @@ void *imk_alloc(size_t n) { return malloc(n ? n : 1); }
 void imk_buffer_free(imk_buffer *b) {
     if (b->data) { wipe(b->data, b->len); free(b->data); }
     b->data = NULL; b->len = 0;
+}
+/* All fallible runtime exits write their status here. Allocation failure is
+ * always native, including allocation while importing a credential. */
+static int32_t finish(imk_status *s, int32_t ret, int32_t kind, int32_t input) {
+    if (s) {
+        s->kind = (ret == ENOMEM || ret == KRB5_CC_NOMEM) ? IMK_STATUS_NATIVE : kind;
+        s->input = input;
+    }
+    return ret;
+}
+int32_t imk_reply_new(imk_reply **out) { return krb5_runtime_reply_new(out); }
+void imk_reply_free(imk_reply *reply) { krb5_runtime_reply_free(reply); }
+int imk_reply_get(const imk_reply *reply, int32_t *exchange, int32_t *error,
+                  const void **text, size_t *len) {
+    krb5_runtime_exchange kind;
+    const krb5_data *value;
+    if (!krb5_runtime_reply_get(reply, &kind, error, &value)) return 0;
+    *exchange = (int32_t)kind;
+    *text = value->data;
+    *len = value->length;
+    return 1;
 }
 static int32_t take_gss(OM_uint32 major, OM_uint32 minor, gss_buffer_t token, imk_buffer *out) {
     OM_uint32 ignored;
@@ -86,7 +108,8 @@ int32_t imk_credential_new(const char *principal, const char *realm,
                          const void *bytes, size_t len, int source,
                          uint32_t lifetime, int forwardable,
                          imk_transport callback, void *data,
-                         imk_credential **out) {
+                         imk_reply *reply, imk_credential **out, imk_status *status) {
+    krb5_runtime_reply_clear(reply);
     imk_credential *c = calloc(1, sizeof(*c));
     krb5_principal actual = NULL;
     krb5_keytab kt = NULL;
@@ -98,27 +121,27 @@ int32_t imk_credential_new(const char *principal, const char *realm,
     char name[7+32+1];
     const char hex[] = "0123456789abcdef";
     OM_uint32 major, minor;
-    int32_t ret = 0;
+    int32_t ret = 0, kind = IMK_STATUS_NATIVE, input = IMK_INPUT_NONE;
     size_t i;
     *out = NULL;
-    if (!c) return ENOMEM;
-    c->transport = callback; c->transport_data = data;
-    ret = krb5_init_runtime_context(realm, transport, c, &c->context);
+    if (!c) return finish(status, ENOMEM, IMK_STATUS_NATIVE, IMK_INPUT_NONE);
+    c->transport = callback; c->transport_data = data; c->reply = reply;
+    ret = krb5_init_runtime_context(realm, transport, c, reply, &c->context);
     if (ret) goto done;
     ret = krb5_parse_name(c->context, principal, &c->principal);
-    if (ret) goto done;
+    if (ret) { kind = IMK_STATUS_CREDENTIAL; input = IMK_INPUT_PRINCIPAL; goto done; }
     if (krb5_princ_realm(c->context, c->principal)->length != strlen(realm) ||
         memcmp(krb5_princ_realm(c->context, c->principal)->data, realm, strlen(realm))) {
-        ret = EINVAL; goto done;
+        ret = EINVAL; kind = IMK_STATUS_CREDENTIAL; input = IMK_INPUT_PRINCIPAL; goto done;
     }
     if (source == IMK_SOURCE_CCACHE) {
         ret = krb5_cc_import_memory(c->context, bytes, len, &c->cache);
-        if (ret) goto done;
+        if (ret) { kind = IMK_STATUS_CREDENTIAL; input = IMK_INPUT_CCACHE; goto done; }
         ret = krb5_cc_get_principal(c->context, c->cache, &actual);
-        if (ret) goto done;
-        if (!krb5_principal_compare(c->context, actual, c->principal)) { ret = EINVAL; goto done; }
+        if (ret) { kind = IMK_STATUS_CREDENTIAL; input = IMK_INPUT_CCACHE; goto done; }
+        if (!krb5_principal_compare(c->context, actual, c->principal)) { ret = EINVAL; kind = IMK_STATUS_CREDENTIAL; input = IMK_INPUT_CCACHE; goto done; }
     } else if (source == IMK_SOURCE_KEYTAB || source == IMK_SOURCE_PASSWORD) {
-        if (!lifetime || lifetime > INT32_MAX) { ret = EINVAL; goto done; }
+        if (!lifetime || lifetime > INT32_MAX) { ret = EINVAL; kind = IMK_STATUS_CONFIGURATION; goto done; }
         ret = krb5_get_init_creds_opt_alloc(c->context, &options);
         if (ret) goto done;
         krb5_get_init_creds_opt_set_tkt_life(options, lifetime);
@@ -135,11 +158,11 @@ int32_t imk_credential_new(const char *principal, const char *realm,
             for (i=0; i<16; i++) { name[7+2*i]=hex[random_bytes[i]>>4]; name[8+2*i]=hex[random_bytes[i]&15]; }
             name[39]=0;
             ret = krb5_kt_import_memory(c->context, name, bytes, len, &kt);
-            if (ret) goto done;
+            if (ret) { kind = IMK_STATUS_CREDENTIAL; input = IMK_INPUT_KEYTAB; goto done; }
             ret = krb5_get_init_creds_keytab(c->context, &ticket, c->principal, kt, 0, NULL, options);
         } else {
             /* No prompter: an expired password fails rather than asking. */
-            if (!len || len > 4096 || memchr(bytes, 0, len)) { ret = EINVAL; goto done; }
+            if (!len || len > 4096 || memchr(bytes, 0, len)) { ret = EINVAL; kind = IMK_STATUS_CREDENTIAL; input = IMK_INPUT_PASSWORD; goto done; }
             password = calloc(1, len + 1);
             if (!password) { ret = ENOMEM; goto done; }
             memcpy(password, bytes, len);
@@ -163,6 +186,7 @@ done:
     krb5_free_cred_contents(c->context, &ticket);
     if (options) krb5_get_init_creds_opt_free(c->context, options);
     if (kt) krb5_kt_close(c->context, kt);
+    ret = finish(status, ret, kind, input);
     if (ret) imk_credential_free(c);
     return ret;
 }
@@ -178,13 +202,14 @@ void imk_exchange_free(imk_exchange *e) {
  * exchange authenticates one HTTP request, whose server may confirm it or
  * not.  Delegation is asked for, and then required, only when requested. */
 int32_t imk_exchange_new(imk_credential *c, const char *target, int mechanism,
-                         int delegate, imk_exchange **out) {
+                         int delegate, imk_exchange **out, imk_status *status) {
+    krb5_runtime_reply_clear(c->reply);
     imk_exchange *e = calloc(1,sizeof(*e));
     gss_buffer_desc name = {strlen(target), (void *)target};
     gss_cred_id_t inner = GSS_C_NO_CREDENTIAL;
     OM_uint32 major,minor;
     *out=NULL;
-    if (!e) return ENOMEM;
+    if (!e) return finish(status, ENOMEM, IMK_STATUS_NATIVE, IMK_INPUT_NONE);
     e->credential=c;
     if (mechanism == IMK_MECHANISM_KERBEROS) {
         e->mechanism=(gss_OID)gss_mech_krb5;
@@ -199,64 +224,69 @@ int32_t imk_exchange_new(imk_credential *c, const char *target, int mechanism,
             major=gss_spnego_initiator_cred(&minor,inner,&e->spnego);
         else
             inner=GSS_C_NO_CREDENTIAL;
-        if (major != GSS_S_COMPLETE) { imk_exchange_free(e); return minor ? (int32_t)minor : EPROTO; }
-    } else { imk_exchange_free(e); return EINVAL; }
+        if (major != GSS_S_COMPLETE) { imk_exchange_free(e); return finish(status, minor ? (int32_t)minor : EPROTO, IMK_STATUS_NATIVE, IMK_INPUT_NONE); }
+    } else { imk_exchange_free(e); return finish(status, EINVAL, IMK_STATUS_NATIVE, IMK_INPUT_NONE); }
     if (delegate) { e->requested|=GSS_C_DELEG_FLAG; e->required|=GSS_C_DELEG_FLAG; }
     /* An explicit principal: no DNS or realm mapping chooses the target. */
     major=gss_import_name(&minor,&name,GSS_KRB5_NT_PRINCIPAL_NAME,&e->target);
-    if (major != GSS_S_COMPLETE) { imk_exchange_free(e); return minor ? (int32_t)minor : EPROTO; }
-    *out=e; return 0;
+    if (major != GSS_S_COMPLETE) { imk_exchange_free(e); return finish(status, minor ? (int32_t)minor : EPROTO, IMK_STATUS_NATIVE, IMK_INPUT_NONE); }
+    *out=e; return finish(status, 0, IMK_STATUS_NATIVE, IMK_INPUT_NONE);
 }
-int32_t imk_step(imk_exchange *e, const void *data, size_t len, imk_buffer *out, int *complete) {
+int32_t imk_step(imk_exchange *e, const void *data, size_t len, imk_buffer *out, int *complete, imk_status *status) {
+    krb5_runtime_reply_clear(e->credential->reply);
     gss_buffer_desc input={len,(void *)data},output=GSS_C_EMPTY_BUFFER;
     OM_uint32 major,minor,flags=0;
     int32_t ret;
     *complete=0;
-    if(e->complete) return EINVAL;
+    if(e->complete) return finish(status, EINVAL, IMK_STATUS_STATE, IMK_INPUT_NONE);
     major=gss_init_sec_context(&minor,e->spnego ? e->spnego : e->credential->handle,&e->context,
           e->target,e->mechanism,e->requested,0,GSS_C_NO_CHANNEL_BINDINGS,&input,NULL,&output,&flags,NULL);
     ret=take_gss(major,minor,&output,out);
-    if(ret) return ret;
+    if(ret) return finish(status, ret, IMK_STATUS_NATIVE, IMK_INPUT_NONE);
     /* A delegation the exchange did not ask for is refused at once. */
     if((flags&GSS_C_DELEG_FLAG) && !(e->requested&GSS_C_DELEG_FLAG)) {
-        imk_buffer_free(out); return EPROTO;
+        imk_buffer_free(out); return finish(status, EPROTO, IMK_STATUS_NATIVE, IMK_INPUT_NONE);
     }
     if(major==GSS_S_COMPLETE) {
-        if((flags&e->required)!=e->required) { imk_buffer_free(out); return EPROTO; }
+        if((flags&e->required)!=e->required) { imk_buffer_free(out); return finish(status, EPROTO, IMK_STATUS_NATIVE, IMK_INPUT_NONE); }
         e->complete=1; *complete=1;
     }
-    return 0;
+    return finish(status, 0, IMK_STATUS_NATIVE, IMK_INPUT_NONE);
 }
-int32_t imk_wrap(imk_exchange *e,int confidential,const void *data,size_t len,imk_buffer *out) {
+int32_t imk_wrap(imk_exchange *e,int confidential,const void *data,size_t len,imk_buffer *out, imk_status *status) {
+    krb5_runtime_reply_clear(e->credential->reply);
     gss_buffer_desc input={len,(void *)data},output=GSS_C_EMPTY_BUFFER;
     OM_uint32 major,minor; int encrypted=0; int32_t ret;
-    if(!e->complete) return EINVAL;
+    if(!e->complete) return finish(status, EINVAL, IMK_STATUS_STATE, IMK_INPUT_NONE);
     major=gss_wrap(&minor,e->context,confidential,GSS_C_QOP_DEFAULT,&input,&encrypted,&output);
     ret=take_gss(major,minor,&output,out);
-    if(!ret && (!!encrypted != !!confidential)) { imk_buffer_free(out); return EPROTO; }
-    return ret;
+    if(!ret && (!!encrypted != !!confidential)) { imk_buffer_free(out); return finish(status, EPROTO, IMK_STATUS_NATIVE, IMK_INPUT_NONE); }
+    return finish(status, ret, IMK_STATUS_NATIVE, IMK_INPUT_NONE);
 }
-int32_t imk_unwrap(imk_exchange *e,int confidential,const void *data,size_t len,imk_buffer *out) {
+int32_t imk_unwrap(imk_exchange *e,int confidential,const void *data,size_t len,imk_buffer *out, imk_status *status) {
+    krb5_runtime_reply_clear(e->credential->reply);
     gss_buffer_desc input={len,(void *)data},output=GSS_C_EMPTY_BUFFER;
     OM_uint32 major,minor; int encrypted=0; gss_qop_t qop; int32_t ret;
-    if(!e->complete) return EINVAL;
+    if(!e->complete) return finish(status, EINVAL, IMK_STATUS_STATE, IMK_INPUT_NONE);
     major=gss_unwrap(&minor,e->context,&input,&output,&encrypted,&qop);
     ret=take_gss(major,minor,&output,out);
     if(!ret && (major!=GSS_S_COMPLETE || (!!encrypted != !!confidential) || qop!=GSS_C_QOP_DEFAULT)) {
-        imk_buffer_free(out); return EPROTO;
+        imk_buffer_free(out); return finish(status, EPROTO, IMK_STATUS_NATIVE, IMK_INPUT_NONE);
     }
-    return ret;
+    return finish(status, ret, IMK_STATUS_NATIVE, IMK_INPUT_NONE);
 }
-int32_t imk_mic(imk_exchange *e,const void *data,size_t len,imk_buffer *out) {
+int32_t imk_mic(imk_exchange *e,const void *data,size_t len,imk_buffer *out, imk_status *status) {
+    krb5_runtime_reply_clear(e->credential->reply);
     gss_buffer_desc input={len,(void *)data},output=GSS_C_EMPTY_BUFFER;
     OM_uint32 major,minor;
-    if(!e->complete) return EINVAL;
+    if(!e->complete) return finish(status, EINVAL, IMK_STATUS_STATE, IMK_INPUT_NONE);
     major=gss_get_mic(&minor,e->context,GSS_C_QOP_DEFAULT,&input,&output);
-    return take_gss(major,minor,&output,out);
+    return finish(status, take_gss(major,minor,&output,out), IMK_STATUS_NATIVE, IMK_INPUT_NONE);
 }
-int32_t imk_wrap_limit(imk_exchange *e,int confidential,uint32_t output,uint32_t *input) {
+int32_t imk_wrap_limit(imk_exchange *e,int confidential,uint32_t output,uint32_t *input, imk_status *status) {
+    krb5_runtime_reply_clear(e->credential->reply);
     OM_uint32 major,minor;
-    if(!e->complete) return EINVAL;
+    if(!e->complete) return finish(status, EINVAL, IMK_STATUS_STATE, IMK_INPUT_NONE);
     major=gss_wrap_size_limit(&minor,e->context,confidential,GSS_C_QOP_DEFAULT,output,input);
-    return major==GSS_S_COMPLETE ? 0 : (minor ? (int32_t)minor : EPROTO);
+    return finish(status, major==GSS_S_COMPLETE ? 0 : (minor ? (int32_t)minor : EPROTO), IMK_STATUS_NATIVE, IMK_INPUT_NONE);
 }

@@ -1,7 +1,6 @@
 //! A failed keytab acquisition is retried against the primary KDC only when a
 //! replica answered (gic_keytab.c, as get_in_tkt.c's password path does).
 use super::*;
-use std::{cell::RefCell, rc::Rc};
 
 /// krb5's error table base (krb5_err.et): a KDC error code `n` is returned
 /// as `ERROR_TABLE_BASE + n`.
@@ -10,95 +9,9 @@ const KDC_ERR_POLICY: i32 = 12;
 const KDC_ERR_CLIENT_REVOKED: i32 = 18;
 const KRB5_KDC_UNREACH: i32 = ERROR_TABLE_BASE + 156;
 
-fn der(tag: u8, content: &[u8]) -> Vec<u8> {
-    let mut out = vec![tag];
-    match content.len() {
-        n if n < 0x80 => out.push(n as u8),
-        n if n < 0x100 => out.extend([0x81, n as u8]),
-        n => out.extend([0x82, (n >> 8) as u8, n as u8]),
-    }
-    out.extend_from_slice(content);
-    out
-}
-fn integer(value: u8) -> Vec<u8> {
-    der(0x02, &[value])
-}
-fn explicit(number: u8, content: Vec<u8>) -> Vec<u8> {
-    der(0xa0 | number, &content)
-}
-
-/// A KRB-ERROR (RFC 4120 5.9.1) from the KDC of realm TEST.
+use super::test_support::{acquire, keytab};
 fn krb_error(code: i32) -> Vec<u8> {
-    let sname = der(
-        0x30,
-        &[
-            explicit(0, integer(2)),
-            explicit(
-                1,
-                der(0x30, &[der(0x1b, b"krbtgt"), der(0x1b, b"TEST")].concat()),
-            ),
-        ]
-        .concat(),
-    );
-    let fields = [
-        explicit(0, integer(5)),
-        explicit(1, integer(30)),
-        explicit(4, der(0x18, b"20260101000000Z")),
-        explicit(5, integer(0)),
-        explicit(6, integer(code as u8)),
-        explicit(9, der(0x1b, b"TEST")),
-        explicit(10, sname),
-    ]
-    .concat();
-    der(0x7e, &der(0x30, &fields))
-}
-
-/// A version 2 keytab (keytab.txt) with one aes256-cts key for user@TEST.
-fn keytab() -> Vec<u8> {
-    let mut entry = Vec::new();
-    entry.extend(1u16.to_be_bytes());
-    for part in [&b"TEST"[..], b"user"] {
-        entry.extend((part.len() as u16).to_be_bytes());
-        entry.extend(part);
-    }
-    entry.extend(1u32.to_be_bytes()); // KRB5_NT_PRINCIPAL
-    entry.extend(0u32.to_be_bytes());
-    entry.push(1);
-    entry.extend(18u16.to_be_bytes());
-    entry.extend(32u16.to_be_bytes());
-    entry.extend([0x42; 32]);
-    entry.extend(1u32.to_be_bytes());
-    let mut out = vec![5, 2];
-    out.extend((entry.len() as i32).to_be_bytes());
-    out.extend(entry);
-    out
-}
-
-/// Acquire with the keytab through a scripted exclusive transport that
-/// answers each request with the next reply; return the result and the number
-/// of requests the transport saw.
-fn acquire(replies: Vec<std::result::Result<Vec<u8>, ()>>) -> (Result<Credential>, usize) {
-    let requests = Rc::new(RefCell::new(0usize));
-    let seen = requests.clone();
-    let mut replies = replies.into_iter();
-    let keytab = keytab();
-    let result = Credential::new(
-        "user@TEST",
-        "TEST",
-        Source::Keytab {
-            bytes: &keytab,
-            initial_ticket_lifetime_seconds: 600,
-        },
-        false,
-        Box::new(move |realm, request| {
-            assert_eq!(realm, b"TEST");
-            assert!(!request.is_empty());
-            *seen.borrow_mut() += 1;
-            replies.next().unwrap_or(Err(())).map(Zeroizing::new)
-        }),
-    );
-    let count = *requests.borrow();
-    (result, count)
+    super::test_support::krb_error(code as u32, None, None)
 }
 
 #[test]
@@ -111,7 +24,8 @@ fn a_final_keytab_refusal_makes_one_exchange_and_keeps_its_error() {
     ]);
     assert!(matches!(
         result,
-        Err(Error::Native(code)) if code == ERROR_TABLE_BASE + KDC_ERR_CLIENT_REVOKED
+        Err(Error::PeerRejected(r)) if r.code() == KDC_ERR_CLIENT_REVOKED
+            && r.exchange() == &ReplyExchange::As { realm: (*b"TEST").into() }
     ));
     assert_eq!(requests, 1);
 }

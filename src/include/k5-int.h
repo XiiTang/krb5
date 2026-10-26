@@ -1255,6 +1255,7 @@ struct _krb5_context {
     void *trace_callback_data;
 
     krb5_boolean kdc_io_exclusive;
+    krb5_runtime_reply *runtime_reply; /* borrowed; shared by context copies */
     krb5_pre_send_fn kdc_send_hook;
     void *kdc_send_hook_data;
 
@@ -2432,5 +2433,12 @@ k5_print_addr(const struct sockaddr *sa, char *buf, size_t len);
 /* Place a printable representation of sa (with port) into buf. */
 void
 k5_print_addr_port(const struct sockaddr *sa, char *buf, size_t len);
+
+/* Runtime-only engine decisions; a raw/default context has no reply slot. */
+void k5_runtime_reply_select(krb5_context, krb5_runtime_exchange,
+                             krb5_error *, krb5_error_code);
+void k5_runtime_reply_offer(krb5_context, krb5_error *, krb5_error_code);
+void k5_runtime_reply_promote(krb5_context, krb5_error_code);
+void k5_runtime_reply_discard_candidate(krb5_context);
 
 #endif /* _KRB5_INT_H */

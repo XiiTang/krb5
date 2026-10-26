@@ -5,6 +5,34 @@ required by Boundless's private Kerberos runtime (`runtime/`): Execution-owned
 credentials in memory, and KDC traffic only through the caller's transport,
 which authorizes every KDC as Access does.
 
+## Engine-selected KDC and acceptor refusals and typed runtime failures
+
+W5-D12 (part of #67) distinguishes a peer's actual terminal KRB-ERROR from a
+local native status with the same integer. AS give-up and saved-preauth-failure
+returns select; the TGS decoder offers a candidate and its four terminal
+returns promote it; the acceptor-error branch selects before deleting its
+context. Every selected nonzero status reaches the runtime return without a
+further exchange or code change. The exclusive send boundary discards a TGS
+candidate before each exchange, so a consumed retry cannot become a later
+local error's evidence. Zero statuses continue MIT's loop and are never selected.
+
+The opaque reply slot lives outside native credentials and contexts. Context
+copies borrow it; selection moves the code and e-text without allocating and
+never reads e-data. The seven runtime entry points clear the slot before work.
+The private Rust `check` alone constructs `ErrorReply`, using the callback's
+addressed realm, and copies an empty text without reading its NULL pointer.
+`finish` alone writes native status kinds and keeps allocation errors native.
+Credential inputs, lifetime configuration, exchange state and security-layer
+offers have typed errors; Display includes no peer text.
+
+Regression evidence is in `runtime/reply_tests.rs`: final AS refusal surviving
+failed credential destruction; PREAUTH_REQUIRED followed by local failure;
+saved preauth fallback; TGS retry selection and candidate discard; acceptor
+refusal surviving context deletion; zero and wrapping statuses; typed inputs,
+offers and state; cross-call clearing; fixed Display. The existing final-keytab
+refusal test in `runtime/keytab_retry_tests.rs` keeps its one-exchange assertion
+and now checks the selected AS reply. The raw-context replica tests stay intact.
+
 | Patch | Why | Regression |
 | --- | --- | --- |
 | Own Kerberos contexts, memory credentials and exclusive KDC transport | A runtime context sends KDC requests only through its callback and never reads a default cache, keytab, profile or plugin; credentials are imported from memory | `runtime/test_interop.c` with `runtime/test_interop.py`; Boundless `protocols::kerberos` tests against an owned KDC |

@@ -481,8 +481,10 @@ static krb5_error_code
 step_non_referral(krb5_context context, krb5_tkt_creds_context ctx)
 {
     /* No fallbacks if we didn't get a successful reply. */
-    if (ctx->reply_code)
+    if (ctx->reply_code) {
+        k5_runtime_reply_promote(context, ctx->reply_code);
         return ctx->reply_code;
+    }
 
     return complete(context, ctx);
 }
@@ -506,8 +508,10 @@ try_fallback(krb5_context context, krb5_tkt_creds_context ctx)
     char **hrealms;
 
     /* Only fall back if our error was from the first referral request. */
-    if (ctx->referral_count > 1)
+    if (ctx->referral_count > 1) {
+        k5_runtime_reply_promote(context, ctx->reply_code);
         return ctx->reply_code;
+    }
 
     /* If the request used a specified realm, make a non-referral request to
      * that realm (in case it's a KDC which rejects KDC_OPT_CANONICALIZE). */
@@ -684,8 +688,10 @@ step_get_tgt_offpath(krb5_context context, krb5_tkt_creds_context ctx)
     const krb5_data *tgt_realm;
 
     /* We have no fallback if the last request failed, so just give up. */
-    if (ctx->reply_code != 0)
+    if (ctx->reply_code != 0) {
+        k5_runtime_reply_promote(context, ctx->reply_code);
         return ctx->reply_code;
+    }
 
     /* Verify that we got a TGT. */
     if (!IS_TGS_PRINC(ctx->reply_creds->server))
@@ -927,6 +933,7 @@ step_get_tgt(krb5_context context, krb5_tkt_creds_context ctx)
         if (ctx->next_realm == ctx->cur_realm) {
             /* We've tried all the realms we could and couldn't progress beyond
              * ctx->cur_realm, so it's time to give up. */
+            k5_runtime_reply_promote(context, ctx->reply_code);
             return ctx->reply_code;
         }
         TRACE_TKT_CREDS_CLOSER_REALM(context, ctx->next_realm);
